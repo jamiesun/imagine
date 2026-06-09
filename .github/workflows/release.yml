@@ -1,0 +1,145 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  build:
+    name: build ${{ matrix.asset }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset: imagine-linux-x86_64
+            zig_target: x86_64-linux-musl
+          - asset: imagine-linux-aarch64
+            zig_target: aarch64-linux-musl
+          - asset: imagine-macos-x86_64
+            zig_target: x86_64-macos
+          - asset: imagine-macos-aarch64
+            zig_target: aarch64-macos
+          - asset: imagine-windows-x86_64.exe
+            zig_target: x86_64-windows
+          - asset: imagine-windows-aarch64.exe
+            zig_target: aarch64-windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Verify tag matches src/version.zig
+        shell: bash
+        run: |
+          ref="${{ github.event.inputs.tag || github.ref_name }}"
+          tag="${ref#v}"
+          ver="$(sed -n 's/.*string *= *"\([^"]*\)".*/\1/p' src/version.zig | head -n1)"
+          echo "tag=$tag  version.zig=$ver"
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::tag ($tag) does not match src/version.zig ($ver). Bump src/version.zig before tagging."
+            exit 1
+          fi
+
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast -Dstrip=true
+
+      - name: Stage asset
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ -f zig-out/bin/imagine.exe ]; then
+            cp zig-out/bin/imagine.exe "dist/${{ matrix.asset }}"
+          else
+            cp zig-out/bin/imagine "dist/${{ matrix.asset }}"
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          retention-days: 1
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Package skill + checksums
+        shell: bash
+        run: |
+          tar -czf dist/imagine-skill.tar.gz -C skills imagine
+          ( cd dist && sha256sum imagine-* > SHA256SUMS )
+          echo "=== release assets ===" && ls -la dist
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: echo "name=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: imagine ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ## Install
+
+            Linux / macOS — one-liner (downloads the prebuilt binary):
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/terateams/imagine/main/install.sh | sh
+            ```
+
+            Windows — download `imagine-windows-x86_64.exe` (or `-aarch64`) below and put it on your `PATH`.
+
+            ### Assets
+            | Platform | File |
+            |----------|------|
+            | Linux x86_64 | `imagine-linux-x86_64` |
+            | Linux arm64 | `imagine-linux-aarch64` |
+            | macOS x86_64 | `imagine-macos-x86_64` |
+            | macOS arm64 | `imagine-macos-aarch64` |
+            | Windows x86_64 | `imagine-windows-x86_64.exe` |
+            | Windows arm64 | `imagine-windows-aarch64.exe` |
+            | Agent skill | `imagine-skill.tar.gz` |
+
+            Verify downloads against `SHA256SUMS`.
+          files: |
+            dist/imagine-linux-x86_64
+            dist/imagine-linux-aarch64
+            dist/imagine-macos-x86_64
+            dist/imagine-macos-aarch64
+            dist/imagine-windows-x86_64.exe
+            dist/imagine-windows-aarch64.exe
+            dist/imagine-skill.tar.gz
+            dist/SHA256SUMS

@@ -572,7 +572,8 @@ fn jsonI64(obj: std.json.ObjectMap, key: []const u8) ?i64 {
 }
 
 fn collectArgs(arena: Allocator, args: std.process.Args) ![]const []const u8 {
-    var it = args.iterate();
+    var it = try args.iterateAllocator(arena);
+    defer it.deinit();
     _ = it.next(); // skip program name
     var list = std.ArrayList([]const u8).empty;
     while (it.next()) |a| try list.append(arena, try arena.dupe(u8, a));

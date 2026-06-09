@@ -1,5 +1,8 @@
 # imagine
 
+[![CI](https://github.com/terateams/imagine/actions/workflows/ci.yml/badge.svg)](https://github.com/terateams/imagine/actions/workflows/ci.yml)
+[![Release](https://github.com/terateams/imagine/actions/workflows/release.yml/badge.svg)](https://github.com/terateams/imagine/actions/workflows/release.yml)
+
 A universal **image-generation CLI for AI agents**. Unified front-end
 parameters, routed to different backends by model name. One model can have
 multiple endpoints (URL + key) for concurrent scheduling. Single static Zig
@@ -15,15 +18,24 @@ First backends: Azure `gpt-image-1.5`, `gpt-image-2` (image generations) and
 
 ## Install
 
-One-liner (auto-detects OS/arch; builds from source with Zig if no prebuilt
-binary is published yet):
+One-liner for Linux / macOS (auto-detects OS/arch, downloads the prebuilt
+binary, verifies its SHA-256, and falls back to building from source with Zig
+if no prebuilt binary is available):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/terateams/imagine/main/install.sh | sh
 ```
 
 This installs the `imagine` binary to `~/.local/bin` and the agent skill to
-`~/.agents/skills/imagine`. Override with `IMAGINE_BIN_DIR`, `IMAGINE_AGENTS_DIR`.
+`~/.agents/skills/imagine`. Override with `IMAGINE_BIN_DIR`, `IMAGINE_AGENTS_DIR`,
+or pin a release with `IMAGINE_VERSION=v0.1.0`.
+
+**Windows:** download `imagine-windows-x86_64.exe` (or `-aarch64`) from the
+[latest release](https://github.com/terateams/imagine/releases/latest) and put
+it on your `PATH`.
+
+Prebuilt binaries are published for every tagged release across Linux, macOS,
+and Windows on both `x86_64` and `arm64`.
 
 From a source checkout:
 

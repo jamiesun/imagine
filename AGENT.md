@@ -106,13 +106,14 @@ imagine version | help
 - 核心架构（types/config/http/backend/scheduler/cli/main）与单元测试。
 - Azure `gpt-image-1.5`、`gpt-image-2`（azure_image）与 `FLUX.2-pro`（azure_flux）。
 - 同模型多端点并发调度；`--json`/`--dry-run`/batch；config init/show/path。
-- `install.sh`（curl 一键，OS 探测）、`Makefile`、`skills/imagine` 技能。
+- `install.sh`（curl 一键，OS 探测，下载预编译二进制并校验 SHA-256）、`Makefile`、`skills/imagine` 技能。
+- CI（Linux/macOS/Windows 构建+测试+`zig fmt`）与 release 工作流：tag 触发，交叉编译
+  Linux/macOS/Windows × `x86_64`/`arm64` 六个目标并发布 GitHub Release。
 
 **近期**
 - HTTP 超时与有界重试（指数退避，仅幂等失败）。
 - 更多后端：OpenAI 官方 `images/generations`、Google Gemini 图像、Stability、Replicate。
 - 图生图 / 编辑（input image、mask）参数通路。
-- 预编译多平台 release 二进制 + `install.sh` 下载快路径。
 
 **远期**
 - 速率限制感知调度（按端点配额）、流式进度、结构化日志。
@@ -124,3 +125,11 @@ imagine version | help
 - 提交前：`zig build test` 必须通过；`zig fmt src/*.zig` 保持格式。
 - 保持模块单一职责与上表边界；新增后端遵循 §3 步骤。
 - 注释只解释"为什么"，不复述"做什么"。
+
+### 发布流程
+
+1. 改 `src/version.zig` 的 `string`（如 `0.2.0`），同步 `build.zig.zon` 的 `version`。
+2. 提交后打 tag：`git tag v0.2.0 && git push origin v0.2.0`。
+3. `.github/workflows/release.yml` 自动交叉编译六平台、打包技能与 `SHA256SUMS`、创建 Release。
+   tag 必须与 `src/version.zig` 一致，否则 workflow 报错中止。
+4. 资产命名：`imagine-<os>-<arch>`（Windows 带 `.exe`），与 `install.sh` 下载路径一致。
