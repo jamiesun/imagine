@@ -117,7 +117,7 @@ jobs:
             Linux / macOS — one-liner (downloads the prebuilt binary):
 
             ```sh
-            curl -fsSL https://raw.githubusercontent.com/terateams/imagine/main/install.sh | sh
+            curl -fsSL https://raw.githubusercontent.com/jamiesun/imagine/main/install.sh | sh
             ```
 
             Windows — download `imagine-windows-x86_64.exe` (or `-aarch64`) below and put it on your `PATH`.
