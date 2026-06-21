@@ -63,6 +63,21 @@ pub const PngCompose = struct {
     layers: []const []const u8 = &.{},
 };
 
+pub const TextRender = struct {
+    text: ?[]const u8 = null,
+    output: ?[]const u8 = null,
+    width: ?u32 = null,
+    height: ?u32 = null,
+    font: ?[]const u8 = null,
+    size: u32 = 64,
+    color: []const u8 = "#000000",
+    stroke: ?[]const u8 = null,
+    stroke_width: f32 = 0,
+    text_align: []const u8 = "left",
+    line_height: f32 = 1.2,
+    padding: u32 = 0,
+};
+
 pub const ConfigInit = struct {
     common: Common = .{},
     force: bool = false,
@@ -82,6 +97,7 @@ pub const Command = union(enum) {
     compose: Compose,
     svg_render: SvgRender,
     png_compose: PngCompose,
+    text_render: TextRender,
     models: Common,
     config_path: Common,
     config_init: ConfigInit,
@@ -107,6 +123,7 @@ pub const usage =
     \\  batch <file>    Generate from a JSON manifest of jobs
     \\  svg render      Render an SVG to a PNG
     \\  png compose     Compose PNG layers over a base PNG
+    \\  text render     Render styled text to a transparent PNG
     \\  compose         Shortcut: render one SVG and overlay it on a PNG
     \\  models          List configured models (--json for machine output)
     \\  config path     Print the resolved config file path
@@ -145,6 +162,20 @@ pub const usage =
     \\      --layer <spec>        Layer spec: path.png,x=0,y=0,opacity=1,blend=normal
     \\  -o, --output <png>        Output PNG path (required)
     \\
+    \\TEXT RENDER OPTIONS:
+    \\      --text <text>         Text; literal \n is treated as a line break
+    \\  -o, --output <png>        Output PNG path (required)
+    \\      --width <px>          Canvas width (required)
+    \\      --height <px>         Canvas height (auto if omitted)
+    \\      --font <name>         Font family (default Arial)
+    \\      --size <px>           Font size (default 64)
+    \\      --color <css>         Fill color (default #000000)
+    \\      --stroke <css>        Stroke color
+    \\      --stroke-width <px>   Stroke width
+    \\      --align <mode>        left | center | right
+    \\      --line-height <num>   Line-height multiplier (default 1.2)
+    \\      --padding <px>        Canvas padding (default 0)
+    \\
     \\COMPOSE SHORTCUT OPTIONS:
     \\      --base <png>          Base PNG image (required)
     \\      --svg <svg>           SVG overlay image (required)
@@ -170,6 +201,7 @@ pub const usage =
     \\  imagine generate -m gpt-image-2 -p "logo" -n 4 -o logo.png -c 4
     \\  imagine batch jobs.json
     \\  imagine svg render --input badge.svg -o badge.png --width 256
+    \\  imagine text render --text "SALE\n50% OFF" -o copy.png --width 900 --font "PingFang SC" --size 72 --align center
     \\  imagine png compose --base photo.png --layer badge.png,x=24,y=24,blend=normal -o composed.png
     \\  imagine compose --base photo.png --svg badge.svg -o composed.png --x 24 --y 24 --width 256
     \\  imagine models --json
@@ -226,6 +258,9 @@ pub fn parse(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
     }
     if (std.mem.eql(u8, cmd, "png")) {
         return parsePng(arena, args[1..]);
+    }
+    if (std.mem.eql(u8, cmd, "text")) {
+        return parseText(arena, args[1..]);
     }
     if (std.mem.eql(u8, cmd, "compose")) {
         return parseCompose(arena, args[1..]);
@@ -443,6 +478,59 @@ fn parsePng(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
     return .{ .command = .{ .png_compose = p } };
 }
 
+fn parseText(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
+    if (args.len == 0) return .{ .err = try arena.dupe(u8, "text requires a subcommand: render") };
+    if (!std.mem.eql(u8, args[0], "render")) {
+        return .{ .err = try std.fmt.allocPrint(arena, "unknown text subcommand: '{s}'", .{args[0]}) };
+    }
+    var t = TextRender{};
+    var cur = Cursor{ .args = args[1..] };
+    while (cur.i < args[1..].len) : (cur.i += 1) {
+        const fs = split(args[1..][cur.i]);
+        const name = fs.name;
+        if (std.mem.eql(u8, name, "--text")) {
+            t.text = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "-o") or std.mem.eql(u8, name, "--output")) {
+            t.output = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--width")) {
+            const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+            t.width = parseU32(v) orelse return .{ .err = try std.fmt.allocPrint(arena, "invalid --width: {s}", .{v}) };
+        } else if (std.mem.eql(u8, name, "--height")) {
+            const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+            t.height = parseU32(v) orelse return .{ .err = try std.fmt.allocPrint(arena, "invalid --height: {s}", .{v}) };
+        } else if (std.mem.eql(u8, name, "--font")) {
+            t.font = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--size")) {
+            const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+            t.size = parseU32(v) orelse return .{ .err = try std.fmt.allocPrint(arena, "invalid --size: {s}", .{v}) };
+        } else if (std.mem.eql(u8, name, "--color")) {
+            t.color = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--stroke")) {
+            t.stroke = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--stroke-width")) {
+            const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+            t.stroke_width = parseF32(v) orelse return .{ .err = try std.fmt.allocPrint(arena, "invalid --stroke-width: {s}", .{v}) };
+        } else if (std.mem.eql(u8, name, "--align")) {
+            t.text_align = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--line-height")) {
+            const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+            t.line_height = parseF32(v) orelse return .{ .err = try std.fmt.allocPrint(arena, "invalid --line-height: {s}", .{v}) };
+        } else if (std.mem.eql(u8, name, "--padding")) {
+            const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+            t.padding = parseU32(v) orelse return .{ .err = try std.fmt.allocPrint(arena, "invalid --padding: {s}", .{v}) };
+        } else if (std.mem.startsWith(u8, name, "-")) {
+            return unknownFlag(arena, name);
+        }
+    }
+    if (t.text == null) return .{ .err = try arena.dupe(u8, "text render requires --text <text>") };
+    if (t.output == null) return .{ .err = try arena.dupe(u8, "text render requires --output <png>") };
+    if (t.width == null) return .{ .err = try arena.dupe(u8, "text render requires --width <px>") };
+    if (t.width.? == 0 or t.height == 0 or t.size == 0) return .{ .err = try arena.dupe(u8, "--width/--height/--size must be >= 1 when provided") };
+    if (t.stroke_width < 0) return .{ .err = try arena.dupe(u8, "--stroke-width must be >= 0") };
+    if (t.line_height <= 0) return .{ .err = try arena.dupe(u8, "--line-height must be > 0") };
+    return .{ .command = .{ .text_render = t } };
+}
+
 fn parseCommon(arena: std.mem.Allocator, args: []const []const u8, comptime tag: std.meta.Tag(Command)) !Parsed {
     var c = Common{};
     var cur = Cursor{ .args = args };
@@ -595,4 +683,17 @@ test "parse svg render and png compose" {
     try std.testing.expectEqualStrings("out.png", p.output.?);
     try std.testing.expectEqual(@as(usize, 1), p.layers.len);
     try std.testing.expectEqualStrings("a.png,x=1,y=2,opacity=0.7,blend=screen", p.layers[0]);
+}
+
+test "parse text render" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const t = (try parseArgs(arena.allocator(), &.{ "text", "render", "--text", "A\\nB", "-o", "copy.png", "--width", "900", "--font", "PingFang SC", "--size", "72", "--color", "#fff", "--stroke", "#111", "--stroke-width", "3", "--align", "center", "--line-height", "1.18" })).command.text_render;
+    try std.testing.expectEqualStrings("A\\nB", t.text.?);
+    try std.testing.expectEqualStrings("copy.png", t.output.?);
+    try std.testing.expectEqual(@as(u32, 900), t.width.?);
+    try std.testing.expectEqualStrings("PingFang SC", t.font.?);
+    try std.testing.expectEqual(@as(u32, 72), t.size);
+    try std.testing.expectEqual(@as(f32, 3), t.stroke_width);
+    try std.testing.expectEqualStrings("center", t.text_align);
 }

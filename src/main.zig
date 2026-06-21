@@ -14,6 +14,7 @@ const scheduler = @import("scheduler.zig");
 const util = @import("util.zig");
 const version = @import("version.zig");
 const overlay = @import("overlay.zig");
+const text = @import("text.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -71,6 +72,7 @@ fn runCommand(ctx: Ctx, cmd: cli.Command) !u8 {
         .batch => |b| cmdBatch(ctx, b),
         .svg_render => |r| cmdSvgRender(ctx, r),
         .png_compose => |p| cmdPngCompose(ctx, p),
+        .text_render => |t| cmdTextRender(ctx, t),
         .compose => |c| cmdCompose(ctx, c),
     };
 }
@@ -510,6 +512,43 @@ fn cmdPngCompose(ctx: Ctx, p: cli.PngCompose) !u8 {
         .layers = layers,
     }) catch |e| return reportOverlayError(ctx, "png compose", e);
     try outf(ctx, "wrote composed PNG to {s}\n", .{output});
+    return 0;
+}
+
+fn cmdTextRender(ctx: Ctx, t: cli.TextRender) !u8 {
+    const output = try expandPath(ctx, t.output.?);
+    if (util.dirName(output)) |_| {
+        try util.ensureParentDir(ctx.io, std.Io.Dir.cwd(), output);
+    }
+    const text_align = text.Align.fromString(t.text_align) orelse {
+        try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "unknown text align: {s} (expected left, center, or right)\n", .{t.text_align}));
+        return 2;
+    };
+    const rendered = text.renderSvgAlloc(ctx.arena, .{
+        .text = t.text.?,
+        .width = t.width.?,
+        .height = t.height,
+        .font = t.font orelse "Arial",
+        .size = t.size,
+        .color = t.color,
+        .stroke = t.stroke,
+        .stroke_width = t.stroke_width,
+        .text_align = text_align,
+        .line_height = t.line_height,
+        .padding = t.padding,
+    }) catch |e| {
+        try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "text render failed: {s}\n", .{@errorName(e)}));
+        return 1;
+    };
+
+    overlay.renderSvgDataToPng(ctx.arena, .{
+        .svg = rendered.svg,
+        .output_path = output,
+        .width = rendered.width,
+        .height = rendered.height,
+    }) catch |e| return reportOverlayError(ctx, "text render", e);
+
+    try outf(ctx, "wrote rendered text PNG to {s}\n", .{output});
     return 0;
 }
 

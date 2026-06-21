@@ -56,6 +56,14 @@ pub const SvgRenderOptions = struct {
     height: ?u32 = null,
 };
 
+pub const SvgDataRenderOptions = struct {
+    svg: []const u8,
+    output_path: []const u8,
+    width: ?u32 = null,
+    height: ?u32 = null,
+    resources_dir: ?[]const u8 = null,
+};
+
 pub const PngComposeOptions = struct {
     base_path: []const u8,
     output_path: []const u8,
@@ -86,6 +94,12 @@ pub const Error = error{
 
 pub fn renderSvgToPng(arena: Allocator, opts: SvgRenderOptions) Error!void {
     const image = try renderSvg(arena, opts.input_path, opts.width, opts.height);
+    defer arena.free(image.pixels);
+    try writePng(arena, opts.output_path, image);
+}
+
+pub fn renderSvgDataToPng(arena: Allocator, opts: SvgDataRenderOptions) Error!void {
+    const image = try renderSvgData(arena, opts.svg, opts.resources_dir, opts.width, opts.height);
     defer arena.free(image.pixels);
     try writePng(arena, opts.output_path, image);
 }
@@ -182,7 +196,30 @@ fn renderSvg(arena: Allocator, path: []const u8, requested_w: ?u32, requested_h:
     if (c.resvg_parse_tree_from_file(path_z.ptr, opt, &tree) != c.RESVG_OK) return Error.InvalidSvg;
     defer c.resvg_tree_destroy(tree.?);
 
-    const intrinsic = c.resvg_get_image_size(tree.?);
+    return renderTree(arena, tree.?, requested_w, requested_h);
+}
+
+fn renderSvgData(arena: Allocator, svg: []const u8, resources_dir: ?[]const u8, requested_w: ?u32, requested_h: ?u32) Error!ImageView {
+    if (!build_options.svg_overlay_enabled) return Error.SvgOverlayDisabled;
+
+    const opt = c.resvg_options_create() orelse return Error.InvalidSvg;
+    defer c.resvg_options_destroy(opt);
+    c.resvg_options_load_system_fonts(opt);
+
+    if (resources_dir) |dir| {
+        const dir_z = try arena.dupeZ(u8, dir);
+        c.resvg_options_set_resources_dir(opt, dir_z.ptr);
+    }
+
+    var tree: ?*c.resvg_render_tree = null;
+    if (c.resvg_parse_tree_from_data(svg.ptr, svg.len, opt, &tree) != c.RESVG_OK) return Error.InvalidSvg;
+    defer c.resvg_tree_destroy(tree.?);
+
+    return renderTree(arena, tree.?, requested_w, requested_h);
+}
+
+fn renderTree(arena: Allocator, tree: *c.resvg_render_tree, requested_w: ?u32, requested_h: ?u32) Error!ImageView {
+    const intrinsic = c.resvg_get_image_size(tree);
     if (intrinsic.width <= 0 or intrinsic.height <= 0) return Error.InvalidDimensions;
 
     const dims = resolveDimensions(intrinsic.width, intrinsic.height, requested_w, requested_h) orelse return Error.InvalidDimensions;
@@ -193,7 +230,7 @@ fn renderSvg(arena: Allocator, path: []const u8, requested_w: ?u32, requested_h:
     var transform = c.resvg_transform_identity();
     transform.a = @as(f32, @floatFromInt(dims.width)) / intrinsic.width;
     transform.d = @as(f32, @floatFromInt(dims.height)) / intrinsic.height;
-    c.resvg_render(tree.?, transform, dims.width, dims.height, @ptrCast(pixels.ptr));
+    c.resvg_render(tree, transform, dims.width, dims.height, @ptrCast(pixels.ptr));
 
     premulToStraight(pixels);
     return .{ .width = dims.width, .height = dims.height, .pixels = pixels };

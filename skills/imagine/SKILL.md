@@ -162,6 +162,7 @@ Each job supports: `model`, `prompt`, `output`, `size`, `width`, `height`, `n`,
 Image composition is split into two reusable commands:
 
 - `svg render`: render an SVG to a transparent PNG at a controlled size.
+- `text render`: generate a styled text layer and render it to a transparent PNG.
 - `png compose`: overlay one or more PNG layers on top of a base PNG, in layer
   order, with optional opacity and blend modes.
 
@@ -185,11 +186,20 @@ Render SVG to PNG:
 imagine svg render --input badge.svg -o badge.png --width 256
 ```
 
+Render text to PNG:
+
+```bash
+imagine text render --text "Summer Sale\nBuy 2 Save 50%" -o copy.png --width 900 \
+  --font "PingFang SC" --size 72 --color "#ffffff" \
+  --stroke "#111111" --stroke-width 3 --align center --line-height 1.18
+```
+
 Compose multiple PNG layers:
 
 ```bash
 imagine png compose --base photo.png \
   --layer badge.png,x=24,y=24,opacity=1,blend=normal \
+  --layer copy.png,x=80,y=120,opacity=1,blend=normal \
   --layer shadow.png,x=20,y=28,opacity=0.45,blend=multiply \
   -o composed.png
 ```
@@ -207,6 +217,11 @@ Options and layer specs:
 | `svg render --input <svg>` | SVG input path. Required. |
 | `svg render -o, --output <png>` | Rendered PNG output path. Required. |
 | `svg render --width / --height <px>` | Rendered dimensions. If only one side is provided, aspect ratio is preserved. |
+| `text render --text <text>` | Text content. Literal `\n` is treated as a line break. |
+| `text render --width <px>` | Canvas width. Required. |
+| `text render --font / --size / --color` | Font family, font size, and fill color. |
+| `text render --stroke / --stroke-width` | Optional SVG text stroke. |
+| `text render --align / --line-height / --padding` | Alignment, line-height multiplier, and canvas padding. |
 | `png compose --base <png>` | Base PNG image. Required. |
 | `png compose --layer <spec>` | PNG layer spec. Repeat for multiple layers. |
 | `png compose -o, --output <png>` | Output PNG path. Required. |

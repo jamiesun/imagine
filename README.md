@@ -73,6 +73,7 @@ imagine generate -m gpt-image-2   -p "logo concept"   -n 4 -o logo.png -c 4
 imagine generate -m <model> -p <prompt> [options]
 imagine batch <manifest.json> [-c N] [--json]
 imagine svg render --input <svg> -o <png> [--width W --height H]
+imagine text render --text <text> -o <png> --width W [options]
 imagine png compose --base <png> --layer <spec>... -o <png>
 imagine compose --base <png> --svg <svg> -o <png> [options]
 imagine models [--json]
@@ -104,16 +105,21 @@ Exit codes: `0` success · `1` run failure (incl. partial) · `2` usage error.
 
 ### image composition
 
-Image composition is split into two reusable steps. `svg render` turns an SVG
-into a transparent PNG at a controlled size. `png compose` overlays one or more
-PNG layers over a base PNG in the order the layers are provided. PNG decoding
-and encoding uses vendored `stb_image.h` / `stb_image_write.h`; SVG rendering
-uses the optional `resvg` C API build.
+Image composition is split into reusable steps. `svg render` turns an SVG into
+a transparent PNG at a controlled size. `text render` generates a styled text
+SVG layer and renders it to PNG. `png compose` overlays one or more PNG layers
+over a base PNG in the order the layers are provided. PNG decoding and encoding
+uses vendored `stb_image.h` / `stb_image_write.h`; SVG rendering uses the
+optional `resvg` C API build.
 
 ```bash
 imagine svg render --input badge.svg -o badge.png --width 256
+imagine text render --text "Summer Sale\nBuy 2 Save 50%" -o copy.png --width 900 \
+  --font "PingFang SC" --size 72 --color "#ffffff" \
+  --stroke "#111111" --stroke-width 3 --align center --line-height 1.18
 imagine png compose --base photo.png \
   --layer badge.png,x=24,y=24,opacity=1,blend=normal \
+  --layer copy.png,x=80,y=120,opacity=1,blend=normal \
   --layer shadow.png,x=20,y=28,opacity=0.45,blend=multiply \
   -o composed.png
 ```
@@ -129,6 +135,10 @@ imagine compose --base photo.png --svg badge.svg -o composed.png --x 24 --y 24 -
 | `svg render --input <svg>` | SVG input path |
 | `svg render -o, --output <png>` | Rendered PNG output path |
 | `svg render --width/--height <px>` | Rendered dimensions; one side preserves aspect ratio |
+| `text render --text <text>` | Text content; literal `\n` is treated as a line break |
+| `text render --font/--size/--color` | Font family, font size, and fill color |
+| `text render --stroke/--stroke-width` | Optional SVG text stroke |
+| `text render --align/--line-height/--padding` | Text alignment, line-height multiplier, and canvas padding |
 | `png compose --base <png>` | Base PNG image |
 | `png compose --layer <spec>` | Layer spec: `path.png,x=0,y=0,opacity=1,blend=normal` |
 | `png compose -o, --output <png>` | Output PNG path |
