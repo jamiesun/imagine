@@ -1,7 +1,7 @@
 # imagine
 
-[![CI](https://github.com/terateams/imagine/actions/workflows/ci.yml/badge.svg)](https://github.com/terateams/imagine/actions/workflows/ci.yml)
-[![Release](https://github.com/terateams/imagine/actions/workflows/release.yml/badge.svg)](https://github.com/terateams/imagine/actions/workflows/release.yml)
+[![CI](https://github.com/jamiesun/imagine/actions/workflows/ci.yml/badge.svg)](https://github.com/jamiesun/imagine/actions/workflows/ci.yml)
+[![Release](https://github.com/jamiesun/imagine/actions/workflows/release.yml/badge.svg)](https://github.com/jamiesun/imagine/actions/workflows/release.yml)
 
 ---
 
@@ -30,7 +30,7 @@ binary and agent skill from the GitHub release, and verifies their SHA-256 —
 no compilation):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/terateams/imagine/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/jamiesun/imagine/main/install.sh | sh
 ```
 
 This installs the `imagine` binary to `~/.local/bin` and the agent skill to
@@ -38,7 +38,7 @@ This installs the `imagine` binary to `~/.local/bin` and the agent skill to
 or pin a release with `IMAGINE_VERSION=v0.1.0`.
 
 **Windows:** download `imagine-windows-x86_64.exe` (or `-aarch64`) from the
-[latest release](https://github.com/terateams/imagine/releases/latest) and put
+[latest release](https://github.com/jamiesun/imagine/releases/latest) and put
 it on your `PATH`.
 
 Prebuilt binaries are published for every tagged release across Linux, macOS,

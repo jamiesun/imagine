@@ -44,7 +44,7 @@ skill in `~/.agents/skills/imagine`. After the user approves, use one of these:
 ```bash
 # Option A: one-line install, recommended. It auto-detects OS/arch, downloads
 # prebuilt artifacts from the GitHub release, and verifies SHA-256 checksums.
-curl -fsSL https://raw.githubusercontent.com/terateams/imagine/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/jamiesun/imagine/main/install.sh | sh
 
 # Option B: source install for development or unsupported prebuilt platforms.
 # Requires Zig >= 0.16.0.
