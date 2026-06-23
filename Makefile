@@ -7,7 +7,7 @@ BINDIR      ?= $(PREFIX)/bin
 AGENTS_DIR  ?= $(HOME)/.agents
 SKILL_DIR   ?= $(AGENTS_DIR)/skills/imagine
 OPTIMIZE    ?= ReleaseFast
-SVG_OVERLAY ?= 0
+SVG_OVERLAY ?= 1
 RESVG_INCLUDE ?=
 RESVG_LIB ?=
 
@@ -29,8 +29,13 @@ endif
 
 # ----- build / test ------------------------------------------------------
 .PHONY: build
-build: ## Build the optimized binary
+build: ## Build the optimized binary with SVG/text render support by default
 	$(ZIG) build -Doptimize=$(OPTIMIZE) $(SVG_FLAGS)
+
+.PHONY: build-core
+build-core: SVG_OVERLAY=0
+build-core: ## Build without optional SVG/text render support
+	$(ZIG) build -Doptimize=$(OPTIMIZE) -Dsvg-overlay=false
 
 .PHONY: debug
 debug: ## Build a debug binary
@@ -43,6 +48,11 @@ build-svg: ## Build with SVG rendering/composition support via resvg
 .PHONY: test
 test: ## Run unit tests
 	$(ZIG) build test $(SVG_FLAGS)
+
+.PHONY: test-core
+test-core: SVG_OVERLAY=0
+test-core: ## Run unit tests without optional SVG/text render support
+	$(ZIG) build test -Dsvg-overlay=false
 
 .PHONY: test-svg
 test-svg: ## Run tests with SVG rendering/composition support enabled

@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/jamiesun/imagine/main/install.sh | 
 
 This installs the `imagine` binary to `~/.local/bin` and the agent skill to
 `~/.agents/skills/imagine`. Override with `IMAGINE_BIN_DIR`, `IMAGINE_AGENTS_DIR`,
-or pin a release with `IMAGINE_VERSION=v0.1.0`.
+or pin a release with `IMAGINE_VERSION=v0.1.1`.
 
 **Windows:** download `imagine-windows-x86_64.exe` (or `-aarch64`) from the
 [latest release](https://github.com/jamiesun/imagine/releases/latest) and put
@@ -148,9 +148,9 @@ This is useful for product images: text layers usually use `normal`, shadow
 layers use `multiply`, highlights use `screen`, and watermarks use `normal`
 with reduced `opacity`.
 
-The default build keeps this feature disabled so the core CLI remains portable.
-Build with `zig build -Dsvg-overlay=true` and install the `resvg` C API library
-first. A matching `resvg.h` is vendored; if you need to use headers or libraries
+The Makefile default build enables this feature through `-Dsvg-overlay=true`;
+install the `resvg` C API library first. Use `make build-core` for a portable
+core binary without SVG/text rendering. If you need to use headers or libraries
 from another location, pass:
 
 ```bash
@@ -237,12 +237,12 @@ imagine config convert --config ~/.imagine/config.json --to toml -o ~/.imagine/c
 ## Development
 
 ```bash
-make build      # zig build -Doptimize=ReleaseFast
-make test       # zig build test
+make build      # zig build -Doptimize=ReleaseFast -Dsvg-overlay=true
+make test       # zig build test -Dsvg-overlay=true
 make run ARGS="generate -m gpt-image-1.5 -p 'a fox' --dry-run"
-make build-svg  # optional svg render / png compose support via resvg C API
+make build-core # build without optional svg/text render support
 make test-svg
-make build SVG_OVERLAY=1 RESVG_LIB=/path/to/lib
+make build RESVG_LIB=/path/to/lib
 make fmt        # zig fmt
 make help       # list targets
 ```
