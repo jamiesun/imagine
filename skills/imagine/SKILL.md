@@ -97,7 +97,7 @@ Only used when **no** config file is found (`--config` / `$IMAGINE_CONFIG` /
 export IMAGINE_BASE_URL="https://host/.../images/generations"
 export IMAGINE_MODEL="MAI-Image-2.6-Flash"   # logical name (+ default api_model)
 export AZURE_OPENAI_APIKEY="..."             # or IMAGINE_API_KEY=... / IMAGINE_API_KEY_ENV=...
-# optional: IMAGINE_API_MODEL, IMAGINE_BACKEND, IMAGINE_AUTH, IMAGINE_SIZE, ...
+# optional: IMAGINE_API_MODEL, IMAGINE_BACKEND, IMAGINE_AUTH, IMAGINE_SIZE, IMAGINE_STEPS, ...
 imagine models --json
 imagine generate -p "a red fox" -o fox.png   # -m optional (single model)
 ```
@@ -108,14 +108,42 @@ Credential precedence (file endpoints): `api_key` literal > `api_key_env`.
 Ephemeral credential: `IMAGINE_API_KEY` > env named by `IMAGINE_API_KEY_ENV` >
 `AZURE_OPENAI_APIKEY`.
 
+An endpoint with `auth = "none"` (or `IMAGINE_AUTH=none` when ephemeral) takes
+**no credential at all** — that is how a local model server is wired, and such a
+model reports `ready: true` without any key set.
+
 Typical backends:
 
 | backend | Protocol | Common params |
 |---------|----------|---------------|
 | `openai_image` | OpenAI-compatible `/v1/images/generations` | `--size`, `--format`, `--quality` |
 | `azure_flux` | Azure FLUX | `--width` / `--height`, optional `--seed` |
+| `qwen_image` | Local Qwen-Image-2.1 server (`/v1/images/generations`) | `--size` (`WxH` or ratio token), `--steps`, `--seed`, `--format` |
 
 Legacy config value `azure_image` is accepted as an alias of `openai_image`.
+
+#### Local Qwen-Image-2.1 (`qwen_image`)
+
+Only usable once a Qwen-Image-2.1 server is installed and running on the
+machine — the model does not live in the `imagine` binary:
+
+```bash
+integrations/qwen-image/install.sh --prefetch   # venv + deps + weights (~20 GB)
+qwen-image-server                               # http://127.0.0.1:8000
+# alternative: vllm serve Qwen/Qwen-Image-2.1 --omni --port 8091
+```
+
+Then, with no config file at all:
+
+```bash
+IMAGINE_BASE_URL=http://127.0.0.1:8000/v1/images/generations \
+IMAGINE_MODEL=qwen-image-2.1 IMAGINE_BACKEND=qwen_image IMAGINE_AUTH=none \
+  imagine generate -p "a neon Qwen sign" --size 16:9 --steps 40 -o sign.png
+```
+
+Native ratio tokens (`1:1`, `4:3`, `3:4`, `3:2`, `2:3`, `16:9`, `9:16`) resolve
+to 2K pixel sizes; transparent RGBA output is asked for in the prompt and needs
+`--format png`. Full details: `integrations/qwen-image/README.md`.
 
 To distribute requests across multiple endpoints, use a config file with
 multiple `endpoints` tables under the same model.
@@ -155,6 +183,7 @@ Common options:
 | `--compression` | Output compression from `0` to `100` for `openai_image` output. |
 | `--quality` | `low`, `medium`, `high`, or `auto` for `openai_image` output. |
 | `--seed` | Seed where supported. |
+| `--steps` | Denoising steps for `qwen_image` (`num_inference_steps`; server default 40). |
 | `-c, --concurrency` | Parallel requests. Default: endpoint count. |
 | `--config` | Use a specific config file. |
 | `--json` | Emit a JSON result object. |
@@ -186,7 +215,7 @@ imagine batch jobs.json -c 4
 ```
 
 Each job supports: `model`, `prompt`, `output`, `size`, `width`, `height`, `n`,
-`format`, `compression`, `quality`, and `seed`.
+`format`, `compression`, `quality`, `seed`, and `steps`.
 
 ## Step 4: SVG/PNG Composition
 
@@ -288,8 +317,9 @@ For product images, use `normal` for copy/text layers, `multiply` for shadows,
 | `IMAGINE_BASE_URL` | Ephemeral: images endpoint URL (required when no file). |
 | `IMAGINE_MODEL` | Ephemeral: logical model name (required when no file). |
 | `IMAGINE_API_MODEL` | Ephemeral: API `model` field (default: `IMAGINE_MODEL`). |
-| `IMAGINE_BACKEND` | Ephemeral: `openai_image` \| `azure_flux` (default `openai_image`). |
-| `IMAGINE_AUTH` | Ephemeral: `bearer` \| `api-key` (default `bearer`). |
+| `IMAGINE_BACKEND` | Ephemeral: `openai_image` \| `azure_flux` \| `qwen_image` (default `openai_image`). |
+| `IMAGINE_AUTH` | Ephemeral: `bearer` \| `api-key` \| `none` (default `bearer`; `none` needs no key). |
+| `IMAGINE_STEPS` | Ephemeral: denoising steps for `qwen_image`. |
 | `IMAGINE_API_KEY` | Ephemeral: inline API key. |
 | `IMAGINE_API_KEY_ENV` | Ephemeral: name of env var holding the key. |
 | `IMAGINE_SIZE` / `IMAGINE_WIDTH` / `IMAGINE_HEIGHT` / `IMAGINE_FORMAT` / `IMAGINE_QUALITY` / `IMAGINE_COMPRESSION` | Ephemeral model defaults. |

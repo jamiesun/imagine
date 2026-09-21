@@ -23,6 +23,10 @@ Single static Zig binary — no `curl`/`jq`/`base64` dependencies.
 Also supports Azure FLUX via `azure_flux` (width/height body). Starter config
 ships example model entries you can edit freely.
 
+An optional `qwen_image` backend drives a **local Qwen-Image-2.1 server**
+(diffusers or vLLM-Omni) with the same unified parameters — no credential, no
+model code in the binary. See [`integrations/qwen-image`](integrations/qwen-image/README.md).
+
 
 ## Install
 
@@ -112,6 +116,7 @@ imagine version | help
 | `--compression <0-100>` | Output compression (`openai_image`) |
 | `--quality <q>` | `low` / `medium` / `high` / `auto` (`openai_image`) |
 | `--seed <int>` | Seed (where supported) |
+| `--steps <n>` | Denoising steps for `qwen_image` (`num_inference_steps`) |
 | `-c, --concurrency <n>` | Parallel requests (default: endpoint count) |
 | `--config <path>` | Use a specific config file |
 | `--json` | Emit a JSON result object |
@@ -184,6 +189,50 @@ Put preferred sizes in each model's `defaults`, discover models with
 |---------|----------------|
 | `openai_image` | `--size` (e.g. `1024x1024`); optional `--format` / `--quality` |
 | `azure_flux` | `--width` / `--height` (and optional `--seed`) |
+| `qwen_image` | `--size` (`WxH` or a native ratio token such as `16:9`), `--steps`, `--seed`, `--format` |
+
+### Local Qwen-Image-2.1 (optional)
+
+`qwen_image` talks to a [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1)
+server on your own machine instead of a cloud API. Install one — the model code
+lives in the integration, not in the binary:
+
+```bash
+integrations/qwen-image/install.sh --prefetch   # venv + deps + weights
+qwen-image-server                               # http://127.0.0.1:8000/v1/images/generations
+```
+
+Or use vLLM-Omni, which speaks the same request contract:
+
+```bash
+vllm serve Qwen/Qwen-Image-2.1 --omni --port 8091
+```
+
+```toml
+[models."qwen-image-2.1"]
+backend = "qwen_image"
+api_model = "Qwen/Qwen-Image-2.1"
+
+[[models."qwen-image-2.1".endpoints]]
+base_url = "http://127.0.0.1:8000/v1/images/generations"
+auth = "none"                 # local servers take no key
+
+[models."qwen-image-2.1".defaults]
+size = "2048x2048"            # or a native ratio token: 16:9 4:3 3:2 ...
+steps = 40
+```
+
+```bash
+imagine generate -m qwen-image-2.1 -p "a neon shop sign reading QWEN IMAGE 2.1" -o sign.png
+imagine generate -m qwen-image-2.1 -p "a wide sticker sheet of dragons" --size 16:9 --steps 40 -o wide.png
+```
+
+`--size` also accepts the model's native ratio tokens (`1:1`, `4:3`, `3:4`,
+`3:2`, `2:3`, `16:9`, `9:16`); imagine resolves them to the 2K shapes from the
+model card before sending. Transparent (RGBA) output is prompt-driven: ask for
+it in the prompt and keep `--format png`. Hardware notes, the editing endpoint,
+and troubleshooting live in
+[`integrations/qwen-image/README.md`](integrations/qwen-image/README.md).
 
 ### batch manifest
 
@@ -197,7 +246,7 @@ Put preferred sizes in each model's `defaults`, discover models with
 }
 ```
 
-Per-job keys: `model, prompt, output, size, width, height, n, format, compression, quality, seed`.
+Per-job keys: `model, prompt, output, size, width, height, n, format, compression, quality, seed, steps`.
 Use model names from `imagine models`.
 
 ## Configuration
@@ -226,13 +275,14 @@ api_model = "deployment-or-model-id"
 [[models."my-image".endpoints]]
 base_url = "https://<resource>.services.ai.azure.com/openai/v1/images/generations"
 api_key_env = "AZURE_OPENAI_APIKEY" # or api_key = "literal"
-auth = "bearer" # bearer | api-key
+auth = "bearer" # bearer | api-key | none  (none = local server, no credential)
 
 [models."my-image".defaults]
 size = "1024x1024"
 output_format = "png"
 output_compression = 100
 quality = "high"
+steps = 40 # qwen_image: num_inference_steps (optional)
 ```
 
 Precedence — params: CLI > model `defaults` > built-in. Keys: endpoint
@@ -264,6 +314,11 @@ make build RESVG_LIB=/path/to/lib
 make fmt        # zig fmt
 make help       # list targets
 ```
+
+The optional local backend ships its own installer and tests-free server:
+`integrations/qwen-image/install.sh --mock` installs a light venv, and
+`qwen-image-server --mock` answers `/v1/images/generations` with placeholder
+images so the wiring can be checked without a GPU.
 
 Architecture, module boundaries, the "add a backend" recipe, and the roadmap
 live in [AGENT.md](AGENT.md). The agent skill lives in

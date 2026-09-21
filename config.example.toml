@@ -56,3 +56,21 @@ size = "1024x1024"
 output_format = "png"
 output_compression = 100
 quality = "high"
+
+# --- Local Qwen-Image-2.1 (optional) -----------------------------------------
+# Install the local server first (see integrations/qwen-image/README.md):
+#   integrations/qwen-image/install.sh --prefetch
+#   qwen-image-server
+# Local servers take no credential, so auth = "none" needs no key.
+# [models."qwen-image-2.1"]
+# backend = "qwen_image"
+# api_model = "Qwen/Qwen-Image-2.1"
+#
+# [[models."qwen-image-2.1".endpoints]]
+# base_url = "http://127.0.0.1:8000/v1/images/generations"
+# auth = "none"
+#
+# [models."qwen-image-2.1".defaults]
+# size = "2048x2048"    # or a native ratio token: 16:9 4:3 3:2 2:3 1:1 ...
+# steps = 40            # = num_inference_steps
+

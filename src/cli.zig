@@ -25,6 +25,7 @@ pub const Generate = struct {
     compression: ?u32 = null,
     quality: ?[]const u8 = null,
     seed: ?i64 = null,
+    steps: ?u32 = null,
     concurrency: ?usize = null,
     dry_run: bool = false,
     quiet: bool = false,
@@ -145,6 +146,7 @@ pub const usage =
     \\      --compression <0-100> Output compression (openai_image)
     \\      --quality <q>         low | medium | high | auto   (openai_image)
     \\      --seed <int>          Seed (where supported)
+    \\      --steps <n>           Denoising steps (qwen_image num_inference_steps)
     \\  -c, --concurrency <num>   Parallel requests (default: endpoint count)
     \\      --config <path>       Use a specific config file
     \\      --json                Emit a JSON result object to stdout
@@ -192,6 +194,9 @@ pub const usage =
     \\  ephemeral env when no config file exists. Run `imagine models`.
     \\  backends: openai_image (OpenAI-compatible /v1/images/generations)
     \\            azure_flux    (Azure FLUX; uses --width/--height)
+    \\            qwen_image    (local Qwen-Image server; uses --size/--steps)
+    \\  Self-hosted endpoints (e.g. a local Qwen-Image server) need no credential:
+    \\  set auth = "none" on the endpoint, or IMAGINE_AUTH=none when going ephemeral.
     \\  Size limits are provider-specific; use model defaults in config or --dry-run.
     \\
     \\ENVIRONMENT:
@@ -201,10 +206,10 @@ pub const usage =
     \\  IMAGINE_MODEL             Ephemeral: logical model name (required if no file)
     \\  IMAGINE_API_MODEL         Ephemeral: api model field (default: IMAGINE_MODEL)
     \\  IMAGINE_BACKEND           Ephemeral: openai_image | azure_flux (default openai_image)
-    \\  IMAGINE_AUTH              Ephemeral: bearer | api-key (default bearer)
+    \\  IMAGINE_AUTH              Ephemeral: bearer | api-key | none (default bearer)
     \\  IMAGINE_API_KEY           Ephemeral: inline API key (overrides env key)
     \\  IMAGINE_API_KEY_ENV       Ephemeral: env var name for key (default AZURE_OPENAI_APIKEY)
-    \\  IMAGINE_SIZE/WIDTH/...    Ephemeral model defaults
+    \\  IMAGINE_SIZE/WIDTH/STEPS  Ephemeral model defaults
     \\
     \\EXAMPLES:
     \\  imagine models --json
@@ -213,6 +218,10 @@ pub const usage =
     \\  IMAGINE_BASE_URL=https://host/v1/images/generations \\
     \\  IMAGINE_MODEL=MAI-Image-2.6-Flash AZURE_OPENAI_APIKEY=... \\
     \\    imagine generate -p "a fox" -o fox.png
+    \\  # local Qwen-Image server (no key needed):
+    \\  IMAGINE_BASE_URL=http://127.0.0.1:8000/v1/images/generations \\
+    \\  IMAGINE_MODEL=qwen-image-2.1 IMAGINE_BACKEND=qwen_image IMAGINE_AUTH=none \\
+    \\    imagine generate -p "a neon Qwen sign" --size 16:9 --steps 40 -o qwen.png
     \\  imagine batch jobs.json
     \\  imagine svg render --input badge.svg -o badge.png --width 256
     \\  imagine text render --text "SALE\n50% OFF" -o copy.png --width 900 --font "PingFang SC" --size 72 --align center
@@ -330,6 +339,9 @@ fn parseGenerate(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
         } else if (std.mem.eql(u8, name, "--seed")) {
             const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
             g.seed = std.fmt.parseInt(i64, v, 10) catch return .{ .err = try std.fmt.allocPrint(arena, "invalid --seed: {s}", .{v}) };
+        } else if (std.mem.eql(u8, name, "--steps")) {
+            const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+            g.steps = parseU32(v) orelse return .{ .err = try std.fmt.allocPrint(arena, "invalid --steps: {s}", .{v}) };
         } else if (std.mem.eql(u8, name, "-c") or std.mem.eql(u8, name, "--concurrency")) {
             const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
             g.concurrency = parseU32(v) orelse return .{ .err = try std.fmt.allocPrint(arena, "invalid --concurrency: {s}", .{v}) };
@@ -352,6 +364,9 @@ fn parseGenerate(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
     // --model is optional when exactly one model is configured (validated in main).
     if (g.prompt == null) return .{ .err = try arena.dupe(u8, "missing required option: --prompt") };
     if (g.n == 0) return .{ .err = try arena.dupe(u8, "--n must be >= 1") };
+    if (g.steps) |s| {
+        if (s == 0) return .{ .err = try arena.dupe(u8, "--steps must be >= 1") };
+    }
 
     return .{ .command = .{ .generate = g } };
 }
@@ -629,6 +644,18 @@ test "parse generate with flags" {
     try std.testing.expectEqualStrings("a fox", g.prompt.?);
     try std.testing.expectEqual(@as(u32, 3), g.n);
     try std.testing.expectEqualStrings("x.png", g.output.?);
+}
+
+test "parse generate --steps and reject 0" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const p = try parseArgs(a, &.{ "generate", "-p", "a fox", "--steps", "25" });
+    try std.testing.expect(p == .command);
+    try std.testing.expectEqual(@as(u32, 25), p.command.generate.steps.?);
+
+    const bad = try parseArgs(a, &.{ "generate", "-p", "a fox", "--steps", "0" });
+    try std.testing.expect(bad == .err);
 }
 
 test "parse generate equals form and positional prompt" {

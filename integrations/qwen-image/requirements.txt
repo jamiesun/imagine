@@ -1,0 +1,14 @@
+# Qwen-Image-2.1 local server dependencies.
+#
+# `torch` is pinned by minimum version only: pick the build that matches your
+# GPU/CUDA (or CPU) from https://pytorch.org/get-started/locally/ first, then
+# install this file — pip will keep the torch you already have when it satisfies
+# the minimum.
+torch>=2.4.0
+transformers>=5.17
+accelerate
+pillow
+fastapi
+uvicorn
+# QwenImage21Pipeline has no released diffusers version yet: install from main.
+diffusers @ git+https://github.com/huggingface/diffusers

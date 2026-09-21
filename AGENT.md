@@ -18,7 +18,8 @@
 
 - **不是**长驻服务 / HTTP server，也**不是**库；它是一次性 CLI 进程。
 - **不做**图像后处理（裁剪、放大、格式转换链路）——只负责"调用模型 → 落盘原图"。
-- **不内置**模型权重或本地推理；只对接远程模型 API。
+- **不内置**模型权重或本地推理；只对接 HTTP 模型服务。本地模型（如 Qwen-Image-2.1）
+  由 `integrations/` 下的独立 server 进程托管，二进制里没有任何模型代码。
 - **不管理**密钥分发；密钥来自环境变量或配置文件，由调用环境负责。
 - **不重试 / 不限流**（当前阶段）：失败即如实上报，重试策略交给调用方。详见路线图。
 
@@ -35,6 +36,7 @@
 | `http.zig` | `std.http.Client` 薄封装：`post`/`get` → `Response{status,body}` | 不懂任何模型语义 |
 | `backends/openai_image.zig` | OpenAI-compatible `/v1/images/generations` 请求体（`size` 字符串） | 只构造 body，不发请求 |
 | `backends/azure_flux.zig` | Azure FLUX 请求体（`width`/`height`，可选 `seed`） | 同上 |
+| `backends/qwen_image.zig` | Qwen-Image 请求体（`size` 像素串或原生比例 token、`steps`、`seed`），调本地/自托管 server | 同上 |
 | `backend.zig` | 后端注册 + `generate()` 编排 + 共享响应解析（b64_json / url 回退 / error） | 不解析 CLI、不写文件 |
 | `scheduler.zig` | 并发任务执行（`std.Thread` 原子认领）、落盘、进度上报 | 不构造请求体、不解析 CLI |
 | `cli.zig` | 参数解析 + help 文本 | 不发网络请求 |
@@ -48,6 +50,8 @@
 3. 在 `backend.zig` 的 `buildBody` dispatch 增加一个 switch 分支。
 4. 若响应结构不同，扩展 `parseResponse`（当前支持 `data[].b64_json` 与 `data[].url`）。
 5. 加单元测试（body 形状）；更新 `config.template` 与 README/SKILL 文档。
+6. 若后端依赖自托管服务（如 `qwen_image`），在 `integrations/<backend>/` 放
+   server + 安装脚本 + README：服务端契约、安装、硬件要求与排障集中一处说明。
 
 ## 4. 配置 schema（`~/.imagine/config.toml`）
 
@@ -59,14 +63,14 @@ concurrency = 0 # 0=按端点数自动；>0 固定并发
 
 # 表键即 -m 的逻辑名，可自由增删改；模型名不写死在二进制里。
 [models."<model-name>"]
-backend = "openai_image" # openai_image | azure_flux（azure_image 为兼容别名）
+backend = "openai_image" # openai_image | azure_flux | qwen_image（azure_image 为兼容别名）
 api_model = "传给 API 的真实 model 字段"
 
 [[models."<model-name>".endpoints]]
 base_url = "https://.../images/generations"
 api_key_env = "AZURE_OPENAI_APIKEY" # 从环境变量取 key
 api_key = "可选：直接写死 key（优先于 env）"
-auth = "bearer" # bearer | api-key，默认 bearer
+auth = "bearer" # bearer | api-key | none（none = 本地无鉴权端点），默认 bearer
 
 [models."<model-name>".defaults]
 size = "1024x1024"
@@ -75,6 +79,7 @@ height = 1024
 output_format = "png"
 output_compression = 100
 quality = "high"
+steps = 40 # qwen_image：num_inference_steps
 ```
 
 参数优先级：**CLI 选项 > 模型 `defaults` > 内置缺省**。
@@ -89,7 +94,9 @@ quality = "high"
 | `IMAGINE_BASE_URL` | 必填，images endpoint |
 | `IMAGINE_MODEL` | 必填，逻辑名（兼默认 api_model） |
 | `AZURE_OPENAI_APIKEY` / `IMAGINE_API_KEY` / `IMAGINE_API_KEY_ENV` | 凭证 |
-| `IMAGINE_BACKEND` / `IMAGINE_AUTH` / `IMAGINE_API_MODEL` / `IMAGINE_SIZE`… | 可选 |
+| `IMAGINE_BACKEND` / `IMAGINE_AUTH` / `IMAGINE_API_MODEL` / `IMAGINE_SIZE` / `IMAGINE_STEPS`… | 可选 |
+
+`IMAGINE_AUTH=none` 表示本地无鉴权端点（如 `qwen_image`），此时无需任何凭证。
 
 `imagine models` / `config show` 的 `source` 为 `ephemeral` 或 `file`。仅一个模型时可省略 `-m`。多模型/多端点仍用配置文件。
 
@@ -97,7 +104,7 @@ quality = "high"
 
 ```
 imagine generate -m <model> -p <prompt> [-o -n -s --width --height \
-        --format --compression --quality --seed -c --config --json --dry-run -q]
+        --format --compression --quality --seed --steps -c --config --json --dry-run -q]
 imagine batch <manifest.json> [-c --json]
 imagine models [--json]
 imagine config path | init [--force] | show
@@ -106,7 +113,7 @@ imagine version | help
 
 - 退出码：`0` 成功；`1` 运行失败（含部分失败）；`2` 用法错误。
 - `--json` 结果对象：`{ ok, model, backend, requested, succeeded, failed, images:[{path,bytes}], errors:[] }`。
-- batch manifest：`{ "jobs": [ { "model","prompt","output","size","width","height","n","format","compression","quality","seed" } ] }`。
+- batch manifest：`{ "jobs": [ { "model","prompt","output","size","width","height","n","format","compression","quality","seed","steps" } ] }`。
 - 多张图（`-n N` 或单端点）→ 文件名自动加 `-1 -2 …` 数字后缀。
 
 ## 6. 路线图
@@ -120,11 +127,16 @@ imagine version | help
 - `install.sh`（curl 一键，OS 探测，下载预编译二进制并校验 SHA-256）、`Makefile`、`skills/imagine` 技能。
 - CI（Linux/macOS/Windows 构建+测试+`zig fmt`）与 release 工作流：tag 触发，交叉编译
   Linux/macOS/Windows × `x86_64`/`arm64` 六个目标并发布 GitHub Release。
+- **Qwen-Image-2.1 可选集成**：`qwen_image` 后端（统一参数 → `size`/`num_inference_steps`/
+  `seed`/`output_format`）、`auth = "none"` 无鉴权端点、`--steps` 与 `IMAGINE_STEPS`，
+  以及 `integrations/qwen-image/`（diffusers server + 安装脚本 + 文档）；同一契约也兼容
+  vLLM-Omni 的 `/v1/images/generations`。
 
 **近期**
 - HTTP 超时与有界重试（指数退避，仅幂等失败）。
 - 更多后端：Google Gemini 图像、Stability、Replicate。
-- 图生图 / 编辑（input image、mask）参数通路。
+- 图生图 / 编辑（input image、mask）参数通路；`integrations/qwen-image` 的 server 已
+  支持 `image`/`images`，CLI 参数补齐后即可直接接上 Qwen-Image-2.1 的编辑能力。
 
 **远期**
 - 速率限制感知调度（按端点配额）、流式进度、结构化日志。

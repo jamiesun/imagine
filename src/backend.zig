@@ -12,6 +12,7 @@ const util = @import("util.zig");
 
 const openai_image = @import("backends/openai_image.zig");
 const azure_flux = @import("backends/azure_flux.zig");
+const qwen_image = @import("backends/qwen_image.zig");
 
 const user_agent = "imagine/" ++ @import("version.zig").string;
 
@@ -20,6 +21,7 @@ pub fn buildBody(kind: types.BackendKind, allocator: std.mem.Allocator, req: typ
     return switch (kind) {
         .openai_image => openai_image.buildBody(allocator, req),
         .azure_flux => azure_flux.buildBody(allocator, req),
+        .qwen_image => qwen_image.buildBody(allocator, req),
     };
 }
 
@@ -49,13 +51,18 @@ pub fn generate(
     endpoint: *const types.Endpoint,
     req: types.ImageRequest,
 ) std.mem.Allocator.Error!GenResult {
-    const key = endpoint.resolved_key orelse {
-        const env_name = endpoint.api_key_env orelse "(none)";
-        return .{ .err = try std.fmt.allocPrint(
-            allocator,
-            "missing credential: set ${s} or add api_key to endpoint for model '{s}'",
-            .{ env_name, model.name },
-        ) };
+    // `auth = "none"` endpoints (a local model server) carry no credential;
+    // every other scheme must resolve one before a request is attempted.
+    const key: ?[]const u8 = switch (endpoint.auth) {
+        .none => null,
+        else => endpoint.resolved_key orelse {
+            const env_name = endpoint.api_key_env orelse "(none)";
+            return .{ .err = try std.fmt.allocPrint(
+                allocator,
+                "missing credential: set ${s} or add api_key to endpoint for model '{s}'",
+                .{ env_name, model.name },
+            ) };
+        },
     };
 
     // Standard headers go through std.http's overridable `headers` field so
@@ -69,11 +76,12 @@ pub fn generate(
     var extra: []const http.Header = &.{};
     var api_key_hdr: [1]http.Header = undefined;
     switch (endpoint.auth) {
+        .none => {},
         .bearer => std_headers.authorization = .{
-            .override = try std.fmt.allocPrint(allocator, "Bearer {s}", .{key}),
+            .override = try std.fmt.allocPrint(allocator, "Bearer {s}", .{key.?}),
         },
         .api_key => {
-            api_key_hdr[0] = .{ .name = endpoint.auth.headerName(), .value = key };
+            api_key_hdr[0] = .{ .name = endpoint.auth.headerName(), .value = key.? };
             extra = api_key_hdr[0..1];
         },
     }

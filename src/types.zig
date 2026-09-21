@@ -8,21 +8,27 @@
 const std = @import("std");
 
 /// How an endpoint authenticates. Azure AI Foundry accepts both a bearer token
-/// and an `api-key` header; other providers can be added later.
+/// and an `api-key` header; other providers can be added later. `none` covers
+/// self-hosted endpoints (a local model server) that take no credential at all.
 pub const AuthScheme = enum {
     bearer,
     api_key,
+    none,
 
     pub fn fromString(s: []const u8) ?AuthScheme {
         if (std.mem.eql(u8, s, "bearer")) return .bearer;
         if (std.mem.eql(u8, s, "api-key") or std.mem.eql(u8, s, "api_key")) return .api_key;
+        if (std.mem.eql(u8, s, "none")) return .none;
         return null;
     }
 
+    /// Name of the header carrying the credential. Never called for `.none`,
+    /// which sends no credential header at all.
     pub fn headerName(self: AuthScheme) []const u8 {
         return switch (self) {
             .bearer => "Authorization",
             .api_key => "api-key",
+            .none => "",
         };
     }
 
@@ -30,6 +36,7 @@ pub const AuthScheme = enum {
         return switch (self) {
             .bearer => "bearer",
             .api_key => "api-key",
+            .none => "none",
         };
     }
 };
@@ -42,6 +49,9 @@ pub const BackendKind = enum {
     openai_image,
     /// Azure-hosted Black Forest Labs FLUX (width/height body).
     azure_flux,
+    /// Qwen-Image text-to-image (`QwenImage21Pipeline`) served locally over an
+    /// OpenAI-compatible `images/generations` endpoint. See `integrations/qwen-image`.
+    qwen_image,
 
     pub fn fromString(s: []const u8) ?BackendKind {
         // openai_image is canonical; azure_image is kept as a legacy alias.
@@ -49,6 +59,9 @@ pub const BackendKind = enum {
             std.mem.eql(u8, s, "azure_image") or std.mem.eql(u8, s, "azure-image"))
             return .openai_image;
         if (std.mem.eql(u8, s, "azure_flux") or std.mem.eql(u8, s, "azure-flux")) return .azure_flux;
+        // Version-agnostic aliases: `-m`/api_model pick the concrete checkpoint.
+        if (std.mem.eql(u8, s, "qwen_image") or std.mem.eql(u8, s, "qwen-image") or
+            std.mem.eql(u8, s, "qwen")) return .qwen_image;
         return null;
     }
 
@@ -56,6 +69,7 @@ pub const BackendKind = enum {
         return switch (self) {
             .openai_image => "openai_image",
             .azure_flux => "azure_flux",
+            .qwen_image => "qwen_image",
         };
     }
 };
@@ -82,6 +96,8 @@ pub const ModelDefaults = struct {
     output_format: ?[]const u8 = null,
     output_compression: ?u32 = null,
     quality: ?[]const u8 = null,
+    /// Denoising steps for diffusion backends (`qwen_image`).
+    steps: ?u32 = null,
 };
 
 /// A logical model the user can route to by name. Maps to exactly one backend
@@ -112,6 +128,8 @@ pub const ImageRequest = struct {
     output_compression: ?u32 = null,
     quality: ?[]const u8 = null,
     seed: ?i64 = null,
+    /// Denoising steps; only diffusion backends (`qwen_image`) send this.
+    steps: ?u32 = null,
 
     /// Apply model defaults for any field the caller left null.
     pub fn applyDefaults(self: *ImageRequest, d: ModelDefaults) void {
@@ -121,6 +139,7 @@ pub const ImageRequest = struct {
         if (self.output_format == null) self.output_format = d.output_format;
         if (self.output_compression == null) self.output_compression = d.output_compression;
         if (self.quality == null) self.quality = d.quality;
+        if (self.steps == null) self.steps = d.steps;
     }
 };
 
@@ -150,7 +169,10 @@ test "parseSize" {
 test "AuthScheme/BackendKind round trips" {
     try std.testing.expectEqual(AuthScheme.bearer, AuthScheme.fromString("bearer").?);
     try std.testing.expectEqual(AuthScheme.api_key, AuthScheme.fromString("api-key").?);
+    try std.testing.expectEqual(AuthScheme.none, AuthScheme.fromString("none").?);
     try std.testing.expectEqual(BackendKind.openai_image, BackendKind.fromString("openai_image").?);
     try std.testing.expectEqual(BackendKind.openai_image, BackendKind.fromString("azure_image").?);
     try std.testing.expectEqual(BackendKind.azure_flux, BackendKind.fromString("azure-flux").?);
+    try std.testing.expectEqual(BackendKind.qwen_image, BackendKind.fromString("qwen_image").?);
+    try std.testing.expectEqual(BackendKind.qwen_image, BackendKind.fromString("qwen-image").?);
 }

@@ -39,6 +39,7 @@ pub const env_height = "IMAGINE_HEIGHT";
 pub const env_format = "IMAGINE_FORMAT";
 pub const env_compression = "IMAGINE_COMPRESSION";
 pub const env_quality = "IMAGINE_QUALITY";
+pub const env_steps = "IMAGINE_STEPS";
 
 pub const Format = enum {
     json,
@@ -178,10 +179,28 @@ pub const EphemeralMissing = struct {
     credential: bool = false,
 };
 
+/// The ephemeral auth scheme, or null when `IMAGINE_AUTH` is unset (or names a
+/// scheme no one knows yet, which `loadEphemeral` reports as `UnknownAuth`).
+fn ephemeralAuth(env: Env) ?types.AuthScheme {
+    const s = envNonEmpty(env, env_auth) orelse return null;
+    return types.AuthScheme.fromString(s);
+}
+
+/// `IMAGINE_AUTH=none` targets a local model server, which takes no credential,
+/// so an ephemeral config pointing at one is complete without a key.
+pub fn ephemeralNeedsCredential(env: Env) bool {
+    if (ephemeralAuth(env)) |a| {
+        if (a == types.AuthScheme.none) return false;
+    }
+    return true;
+}
+
 pub fn ephemeralMissing(env: Env) EphemeralMissing {
     var m: EphemeralMissing = .{};
     if (envNonEmpty(env, env_base_url) == null) m.base_url = true;
     if (envNonEmpty(env, env_model) == null) m.model = true;
+
+    if (!ephemeralNeedsCredential(env)) return m;
 
     const has_literal = envNonEmpty(env, env_api_key) != null;
     const key_env_name = envNonEmpty(env, env_api_key_env) orelse env_default_api_key_env;
@@ -251,6 +270,8 @@ pub fn loadEphemeral(gpa: Allocator, env: Env) Error!Config {
     if (envNonEmpty(env, env_api_key)) |k| {
         ep.api_key = try arena.dupe(u8, k);
         ep.resolved_key = ep.api_key;
+    } else if (auth == .none) {
+        // Local server: nothing to resolve, and no auth header is sent.
     } else {
         const key_env = envNonEmpty(env, env_api_key_env) orelse env_default_api_key_env;
         ep.api_key_env = try arena.dupe(u8, key_env);
@@ -268,6 +289,7 @@ pub fn loadEphemeral(gpa: Allocator, env: Env) Error!Config {
     if (envNonEmpty(env, env_width)) |s| defaults.width = parseEnvU32(s) orelse return Error.BadFieldType;
     if (envNonEmpty(env, env_height)) |s| defaults.height = parseEnvU32(s) orelse return Error.BadFieldType;
     if (envNonEmpty(env, env_compression)) |s| defaults.output_compression = parseEnvU32(s) orelse return Error.BadFieldType;
+    if (envNonEmpty(env, env_steps)) |s| defaults.steps = parseEnvU32(s) orelse return Error.BadFieldType;
 
     const endpoints = try arena.alloc(types.Endpoint, 1);
     endpoints[0] = ep;
@@ -342,6 +364,7 @@ fn parseDefaults(arena: Allocator, obj: *const std.json.ObjectMap) !types.ModelD
     d.width = try getU32(obj, "width");
     d.height = try getU32(obj, "height");
     d.output_compression = try getU32(obj, "output_compression");
+    d.steps = try getU32(obj, "steps");
     return d;
 }
 
@@ -640,6 +663,8 @@ fn applyTomlPair(arena: Allocator, section: TomlSection, key: []const u8, value:
                 m.defaults.height = try scalarU32(value);
             } else if (std.mem.eql(u8, key, "output_compression")) {
                 m.defaults.output_compression = try scalarU32(value);
+            } else if (std.mem.eql(u8, key, "steps")) {
+                m.defaults.steps = try scalarU32(value);
             } else {
                 return Error.UnsupportedToml;
             }
@@ -848,7 +873,8 @@ fn tomlStringAlloc(arena: Allocator, s: []const u8) ![]const u8 {
 
 fn defaultsAny(d: types.ModelDefaults) bool {
     return d.size != null or d.width != null or d.height != null or
-        d.output_format != null or d.output_compression != null or d.quality != null;
+        d.output_format != null or d.output_compression != null or d.quality != null or
+        d.steps != null;
 }
 
 fn appendJsonFieldString(out: *std.ArrayList(u8), arena: Allocator, name: []const u8, value: []const u8, first: *bool, indent: []const u8) !void {
@@ -872,6 +898,7 @@ fn appendJsonDefaults(out: *std.ArrayList(u8), arena: Allocator, d: types.ModelD
     if (d.output_format) |v| try appendJsonFieldString(out, arena, "output_format", v, &first, indent);
     if (d.output_compression) |v| try appendJsonFieldU32(out, arena, "output_compression", v, &first, indent);
     if (d.quality) |v| try appendJsonFieldString(out, arena, "quality", v, &first, indent);
+    if (d.steps) |v| try appendJsonFieldU32(out, arena, "steps", v, &first, indent);
     try out.appendSlice(arena, "\n      }");
 }
 
@@ -935,6 +962,7 @@ pub fn toTomlAlloc(arena: Allocator, cfg: Config) ![]const u8 {
             if (m.defaults.output_format) |v| try appendFmt(&out, arena, "output_format = {s}\n", .{try tomlStringAlloc(arena, v)});
             if (m.defaults.output_compression) |v| try appendFmt(&out, arena, "output_compression = {d}\n", .{v});
             if (m.defaults.quality) |v| try appendFmt(&out, arena, "quality = {s}\n", .{try tomlStringAlloc(arena, v)});
+            if (m.defaults.steps) |v| try appendFmt(&out, arena, "steps = {d}\n", .{v});
         }
     }
     return out.toOwnedSlice(arena);
@@ -1000,6 +1028,22 @@ pub const template =
     \\output_format = "png"
     \\output_compression = 100
     \\quality = "high"
+    \\
+    \\# --- Local Qwen-Image-2.1 (optional) ---------------------------------------
+    \\# Install the local server first (see integrations/qwen-image/README.md):
+    \\#   integrations/qwen-image/install.sh   ... then run: qwen-image-server
+    \\# Local servers take no credential, so auth = "none" needs no key. Uncomment:
+    \\# [models."qwen-image-2.1"]
+    \\# backend = "qwen_image"
+    \\# api_model = "Qwen/Qwen-Image-2.1"
+    \\
+    \\# [[models."qwen-image-2.1".endpoints]]
+    \\# base_url = "http://127.0.0.1:8000/v1/images/generations"
+    \\# auth = "none"
+    \\
+    \\# [models."qwen-image-2.1".defaults]
+    \\# size = "2048x2048"       # or an aspect-ratio token: 16:9 4:3 3:2 ...
+    \\# steps = 40               # = num_inference_steps
     \\
 ;
 
@@ -1097,6 +1141,52 @@ test "loadFromBytes parses models, endpoints and defaults" {
     const flash = cfg.findModel("MAI-Image-2.6-Flash").?;
     try std.testing.expectEqual(types.BackendKind.openai_image, flash.backend);
     try std.testing.expectEqualStrings("MAI-Image-2.6-Flash", flash.api_model);
+}
+
+test "auth=none endpoint is keyless and defaults.steps parses" {
+    const a = std.testing.allocator;
+    const toml =
+        \\[models."qwen-image-2.1"]
+        \\backend = "qwen_image"
+        \\api_model = "Qwen/Qwen-Image-2.1"
+        \\
+        \\[[models."qwen-image-2.1".endpoints]]
+        \\base_url = "http://127.0.0.1:8000/v1/images/generations"
+        \\auth = "none"
+        \\
+        \\[models."qwen-image-2.1".defaults]
+        \\size = "2048x2048"
+        \\steps = 40
+        \\
+    ;
+    var cfg = try loadFromBytes(a, toml, Env.empty());
+    defer cfg.deinit();
+
+    const m = cfg.findModel("qwen-image-2.1").?;
+    try std.testing.expectEqual(types.BackendKind.qwen_image, m.backend);
+    try std.testing.expectEqual(types.AuthScheme.none, m.endpoints[0].auth);
+    try std.testing.expect(m.endpoints[0].resolved_key == null);
+    try std.testing.expectEqual(@as(u32, 40), m.defaults.steps.?);
+}
+
+test "loadEphemeral auth=none needs no credential" {
+    const a = std.testing.allocator;
+    var te = TestEnv{ .map = std.StringHashMap([]const u8).init(a) };
+    defer te.map.deinit();
+    try te.map.put(env_base_url, "http://127.0.0.1:8000/v1/images/generations");
+    try te.map.put(env_model, "qwen-image-2.1");
+    try te.map.put(env_backend, "qwen_image");
+    try te.map.put(env_auth, "none");
+    try te.map.put(env_steps, "40");
+
+    try std.testing.expect(ephemeralReady(te.env()));
+    var cfg = try loadEphemeral(a, te.env());
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(types.BackendKind.qwen_image, cfg.models[0].backend);
+    try std.testing.expectEqual(types.AuthScheme.none, cfg.models[0].endpoints[0].auth);
+    try std.testing.expect(cfg.models[0].endpoints[0].resolved_key == null);
+    try std.testing.expectEqual(@as(u32, 40), cfg.models[0].defaults.steps.?);
 }
 
 test "loadJsonFromBytes keeps legacy config support" {

@@ -172,7 +172,9 @@ fn cmdConfigShow(ctx: Ctx, c: cli.Common) !u8 {
     for (cfg.models, 0..) |m, mi| {
         var eps = try ctx.arena.alloc(Endpoint, m.endpoints.len);
         for (m.endpoints, 0..) |ep, ei| {
-            const key_disp = if (ep.resolved_key) |k|
+            const key_disp = if (ep.auth == .none)
+                try ctx.arena.dupe(u8, "(not required)")
+            else if (ep.resolved_key) |k|
                 try util.redactKey(ctx.arena, k)
             else
                 try ctx.arena.dupe(u8, "(unset)");
@@ -242,6 +244,9 @@ fn cmdModels(ctx: Ctx, c: cli.Common) !u8 {
 
 fn modelReady(m: types.ModelConfig) bool {
     for (m.endpoints) |ep| {
+        // A keyless endpoint (`auth = "none"`, e.g. a local Qwen-Image server)
+        // is ready as soon as it is configured; the rest need a credential.
+        if (ep.auth == .none) return true;
         if (ep.resolved_key != null) return true;
     }
     return false;
@@ -268,6 +273,7 @@ fn cmdGenerate(ctx: Ctx, g: cli.Generate) !u8 {
         .output_compression = g.compression,
         .quality = g.quality,
         .seed = g.seed,
+        .steps = g.steps,
     };
     req.applyDefaults(model.defaults);
 
@@ -388,6 +394,7 @@ fn cmdBatch(ctx: Ctx, b: cli.Batch) !u8 {
             .output_compression = jsonU32(job, "compression"),
             .quality = if (jsonStr(job, "quality")) |s| try ctx.arena.dupe(u8, s) else null,
             .seed = jsonI64(job, "seed"),
+            .steps = jsonU32(job, "steps"),
         };
         req.applyDefaults(model.defaults);
 

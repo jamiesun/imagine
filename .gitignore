@@ -2,3 +2,4 @@
 zig-out/
 dist/
 *.o
+__pycache__/
