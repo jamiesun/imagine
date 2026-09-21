@@ -37,12 +37,14 @@ jobs:
             rust_target: x86_64-unknown-linux-musl
             zig_target: x86_64-linux-musl
             gcc: musl-gcc
+            libs: gcc_eh
             svg: true
           - asset: imagine-linux-aarch64
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-musl
             zig_target: aarch64-linux-musl
             gcc: musl-gcc
+            libs: gcc_eh
             svg: true
           - asset: imagine-macos-x86_64
             runner: macos-latest
@@ -54,13 +56,15 @@ jobs:
             rust_target: aarch64-apple-darwin
             zig_target: aarch64-macos
             svg: true
-          # Windows uses the SEH exception model, so rustc's staticlib has no
-          # DWARF unwinder references and no libgcc_eh is needed here (mingw's
-          # libgcc_eh.a is a DLL import library and would add a runtime dep).
+          # rustc's staticlib leaves the mingw unwinder (_Unwind_*,
+          # _GCC_specific_handler) and the Windows system libraries to the final
+          # link; the smoke test asserts the result stays DLL-free.
           - asset: imagine-windows-x86_64.exe
             runner: windows-latest
             rust_target: x86_64-pc-windows-gnu
             zig_target: x86_64-windows
+            gcc: x86_64-w64-mingw32-gcc
+            libs: gcc,gcc_eh,ws2_32,userenv
             svg: true
           # resvg cannot be cross-built for aarch64 Windows here, so this asset
           # stays SVG-free (documented in the release notes).
@@ -136,7 +140,7 @@ jobs:
             gcc_dir="$(dirname "$(${{ matrix.gcc }} -print-libgcc-file-name)")"
             echo "libgcc dir: $gcc_dir"
             ls -l "$gcc_dir"/libgcc*.a
-            cp "$gcc_dir/libgcc_eh.a" "$lib/" 2>/dev/null || cp "$gcc_dir/libgcc.a" "$lib/libgcc_eh.a"
+            cp "$gcc_dir"/libgcc*.a "$lib/"
           fi
           ls -l "$lib" | grep -iE "resvg|gcc" 
 
@@ -148,8 +152,8 @@ jobs:
           if [ "${{ matrix.svg }}" = "true" ]; then
             src="$RUNNER_TEMP/resvg"
             args="$args -Dsvg-overlay=true -Dresvg-include=$src/crates/c-api -Dresvg-lib=$src/target/${{ matrix.rust_target }}/release"
-            if [ -n "${{ matrix.gcc }}" ]; then
-              args="$args -Dresvg-libs=gcc_eh"
+            if [ -n "${{ matrix.libs }}" ]; then
+              args="$args -Dresvg-libs=${{ matrix.libs }}"
             fi
           fi
           echo "zig build $args"
