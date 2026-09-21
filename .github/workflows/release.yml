@@ -36,11 +36,13 @@ jobs:
             runner: ubuntu-latest
             rust_target: x86_64-unknown-linux-musl
             zig_target: x86_64-linux-musl
+            gcc: musl-gcc
             svg: true
           - asset: imagine-linux-aarch64
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-musl
             zig_target: aarch64-linux-musl
+            gcc: musl-gcc
             svg: true
           - asset: imagine-macos-x86_64
             runner: macos-latest
@@ -56,6 +58,7 @@ jobs:
             runner: windows-latest
             rust_target: x86_64-pc-windows-gnu
             zig_target: x86_64-windows
+            gcc: x86_64-w64-mingw32-gcc
             svg: true
           # resvg cannot be cross-built for aarch64 Windows here, so this asset
           # stays SVG-free (documented in the release notes).
@@ -65,7 +68,10 @@ jobs:
             zig_target: aarch64-windows
             svg: false
     steps:
+      # workflow_dispatch builds the tagged source, not the default branch.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Verify tag matches src/version.zig
         shell: bash
@@ -106,15 +112,32 @@ jobs:
       - name: Build resvg C API (static)
         if: matrix.svg
         shell: bash
+        env:
+          # Panics abort instead of unwinding across the C ABI, and it drops
+          # almost every libgcc unwinder reference from the archive.
+          RUSTFLAGS: -C panic=abort
         run: |
           set -euo pipefail
           src="$RUNNER_TEMP/resvg"
+          lib="$src/target/${{ matrix.rust_target }}/release"
           curl -sSL --retry 3 --retry-delay 2 \
             "https://codeload.github.com/linebender/resvg/tar.gz/refs/tags/${RESVG_VERSION}" -o "$RUNNER_TEMP/resvg.tgz"
           mkdir -p "$src"
-          tar xzf "$RUNNER_TEMP/resvg.tgz" -C "$src" --strip-components=1
+          # Relative paths on purpose: GNU tar on Windows reads "D:\..." as a
+          # remote host spec.
+          ( cd "$RUNNER_TEMP" && tar xzf resvg.tgz -C resvg --strip-components=1 )
           cargo build --release -p resvg-capi --manifest-path "$src/Cargo.toml" --target "${{ matrix.rust_target }}"
-          ls -l "$src/target/${{ matrix.rust_target }}/release/" | grep -i resvg
+          # Zig ships no DWARF unwinder (libgcc_eh) for musl/mingw targets and
+          # rustc leaves those references to the final link, so fold the
+          # toolchain's libgcc into the archive.
+          if [ -n "${{ matrix.gcc }}" ]; then
+            gcc_lib="$(${{ matrix.gcc }} -print-libgcc-file-name)"
+            echo "merging $gcc_lib into libresvg.a"
+            mkdir -p "$lib/merge"
+            ( cd "$lib/merge" && ar x ../libresvg.a && ar x "$gcc_lib" && ar rcs ../libresvg.a ./*.o )
+            rm -rf "$lib/merge"
+          fi
+          ls -l "$lib" | grep -i resvg
 
       - name: Build imagine
         shell: bash

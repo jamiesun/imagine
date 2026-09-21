@@ -39,7 +39,10 @@ pub fn build(b: *std.Build) void {
         } else {
             exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
         }
-        exe.root_module.linkSystemLibrary("resvg", .{});
+        // Never let pkg-config inject a host-platform resvg: cross builds must
+        // use exactly the library passed via -Dresvg-lib (pkg-config happily
+        // returns a Mach-O/ELF library from another platform otherwise).
+        exe.root_module.linkSystemLibrary("resvg", .{ .use_pkg_config = .no });
     }
     b.installArtifact(exe);
 
@@ -76,7 +79,7 @@ pub fn build(b: *std.Build) void {
         } else {
             unit_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
         }
-        unit_tests.root_module.linkSystemLibrary("resvg", .{});
+        unit_tests.root_module.linkSystemLibrary("resvg", .{ .use_pkg_config = .no });
     }
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
