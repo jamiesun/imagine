@@ -159,17 +159,26 @@ jobs:
         if: matrix.svg && matrix.asset != 'imagine-windows-aarch64.exe'
         shell: bash
         run: |
-          set -euo pipefail
+          # Report every failure instead of stopping at the first one: a broken
+          # asset should not publish, but the log should say why in one run.
+          set -uo pipefail
+          fail=0
+          ls -l zig-out/bin/ || true
           bin=zig-out/bin/imagine
-          [ -f "$bin.exe" ] && bin="$bin.exe"
-          "$bin" version
+          if [ -f "$bin.exe" ]; then bin="$bin.exe"; fi
+          echo "binary under test: $bin"
+          if command -v objdump >/dev/null 2>&1; then
+            objdump -p "$bin" 2>/dev/null | grep -i "DLL Name" || true
+          fi
+          "$bin" version || fail=1
           cat > "$RUNNER_TEMP/badge.svg" <<'SVG'
           <svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><circle cx="60" cy="60" r="54" fill="#2563eb"/><text x="60" y="70" font-size="28" text-anchor="middle" fill="#fff">svg</text></svg>
           SVG
-          "$bin" svg render --input "$RUNNER_TEMP/badge.svg" -o "$RUNNER_TEMP/badge.png" --width 120
-          "$bin" text render --text "resvg linked" -o "$RUNNER_TEMP/text.png" --width 300 --size 28
-          "$bin" png compose --base "$RUNNER_TEMP/badge.png" --layer "$RUNNER_TEMP/text.png,x=0,y=0" -o "$RUNNER_TEMP/composed.png"
-          ls -l "$RUNNER_TEMP/badge.png" "$RUNNER_TEMP/text.png" "$RUNNER_TEMP/composed.png"
+          "$bin" svg render --input "$RUNNER_TEMP/badge.svg" -o "$RUNNER_TEMP/badge.png" --width 120 || fail=1
+          "$bin" text render --text "resvg linked" -o "$RUNNER_TEMP/text.png" --width 300 --size 28 || fail=1
+          "$bin" png compose --base "$RUNNER_TEMP/badge.png" --layer "$RUNNER_TEMP/text.png,x=0,y=0" -o "$RUNNER_TEMP/composed.png" || fail=1
+          ls -l "$RUNNER_TEMP"/badge.png "$RUNNER_TEMP"/text.png "$RUNNER_TEMP"/composed.png || true
+          exit $fail
 
       - name: Stage asset
         shell: bash
