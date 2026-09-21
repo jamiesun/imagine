@@ -42,7 +42,9 @@ import time
 from typing import Any
 
 DEFAULT_MODEL = "Qwen/Qwen-Image-2.1"
-DEFAULT_SIZE = (2048, 2048)
+# 1024 keeps one image near a minute on Apple Silicon; the model card's native
+# 2K shapes stay available by asking for them (--size 16:9, --size 2048x2048).
+DEFAULT_SIZE = (1024, 1024)
 DEFAULT_STEPS = 40
 MAX_IMAGES = 8
 OUTPUT_FORMATS = ("png", "jpeg", "webp")

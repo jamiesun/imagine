@@ -138,12 +138,14 @@ Then, with no config file at all:
 ```bash
 IMAGINE_BASE_URL=http://127.0.0.1:8000/v1/images/generations \
 IMAGINE_MODEL=qwen-image-2.1 IMAGINE_BACKEND=qwen_image IMAGINE_AUTH=none \
-  imagine generate -p "a neon Qwen sign" --size 16:9 --steps 40 -o sign.png
+  imagine generate -p "a neon Qwen sign" --size 1024x1024 --steps 20 -o sign.png
 ```
 
-Native ratio tokens (`1:1`, `4:3`, `3:4`, `3:2`, `2:3`, `16:9`, `9:16`) resolve
-to 2K pixel sizes; transparent RGBA output is asked for in the prompt and needs
-`--format png`. Full details: `integrations/qwen-image/README.md`.
+The server default is **1024x1024** (~1 minute per image on an M2 Ultra); native
+ratio tokens (`1:1`, `4:3`, `3:4`, `3:2`, `2:3`, `16:9`, `9:16`) resolve to 2K
+pixel sizes and cost roughly 6x the time, so ask for them explicitly.
+Transparent RGBA output is asked for in the prompt and needs `--format png`.
+Full details: `integrations/qwen-image/README.md`.
 
 To distribute requests across multiple endpoints, use a config file with
 multiple `endpoints` tables under the same model.

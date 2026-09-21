@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to build (e.g. v0.1.0)'
+        description: 'Release tag to build (e.g. v0.3.0)'
         required: true
 
 permissions:
@@ -18,34 +18,54 @@ concurrency:
 
 env:
   ZIG_VERSION: 0.16.0
+  # Must match vendor/resvg/resvg.h (RESVG_VERSION there).
+  RESVG_VERSION: v0.47.0
 
 jobs:
   build:
     name: build ${{ matrix.asset }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Released binaries ship with SVG/text render + PNG compose enabled:
+          # resvg's C API is a Rust staticlib, so it is built from source on a
+          # native runner per target (cross-linking it is not practical).
           - asset: imagine-linux-x86_64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
             zig_target: x86_64-linux-musl
+            svg: true
           - asset: imagine-linux-aarch64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
             zig_target: aarch64-linux-musl
+            svg: true
           - asset: imagine-macos-x86_64
+            runner: macos-latest
+            rust_target: x86_64-apple-darwin
             zig_target: x86_64-macos
+            svg: true
           - asset: imagine-macos-aarch64
+            runner: macos-latest
+            rust_target: aarch64-apple-darwin
             zig_target: aarch64-macos
+            svg: true
           - asset: imagine-windows-x86_64.exe
+            runner: windows-latest
+            rust_target: x86_64-pc-windows-gnu
             zig_target: x86_64-windows
+            svg: true
+          # resvg cannot be cross-built for aarch64 Windows here, so this asset
+          # stays SVG-free (documented in the release notes).
           - asset: imagine-windows-aarch64.exe
+            runner: ubuntu-latest
+            rust_target: ''
             zig_target: aarch64-windows
+            svg: false
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
 
       - name: Verify tag matches src/version.zig
         shell: bash
@@ -59,8 +79,70 @@ jobs:
             exit 1
           fi
 
-      - name: Build
-        run: zig build -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast -Dstrip=true
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Set up Rust
+        if: matrix.svg
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install musl toolchain
+        if: matrix.svg && contains(matrix.rust_target, 'linux-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      # The GNU Windows target must compile any C shim with mingw's gcc, not
+      # MSVC's cl.exe, or the archive will not link with zig's mingw target.
+      - name: Put mingw first for the GNU Windows target
+        if: matrix.svg && matrix.rust_target == 'x86_64-pc-windows-gnu'
+        shell: bash
+        run: echo "C:/msys64/mingw64/bin" >> "$GITHUB_PATH"
+
+      - name: Build resvg C API (static)
+        if: matrix.svg
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/resvg"
+          curl -sSL --retry 3 --retry-delay 2 \
+            "https://codeload.github.com/linebender/resvg/tar.gz/refs/tags/${RESVG_VERSION}" -o "$RUNNER_TEMP/resvg.tgz"
+          mkdir -p "$src"
+          tar xzf "$RUNNER_TEMP/resvg.tgz" -C "$src" --strip-components=1
+          cargo build --release -p resvg-capi --manifest-path "$src/Cargo.toml" --target "${{ matrix.rust_target }}"
+          ls -l "$src/target/${{ matrix.rust_target }}/release/" | grep -i resvg
+
+      - name: Build imagine
+        shell: bash
+        run: |
+          set -euo pipefail
+          args="-Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast -Dstrip=true"
+          if [ "${{ matrix.svg }}" = "true" ]; then
+            src="$RUNNER_TEMP/resvg"
+            args="$args -Dsvg-overlay=true -Dresvg-include=$src/crates/c-api -Dresvg-lib=$src/target/${{ matrix.rust_target }}/release"
+          fi
+          echo "zig build $args"
+          zig build $args
+
+      - name: Smoke test SVG support
+        if: matrix.svg && matrix.asset != 'imagine-windows-aarch64.exe'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=zig-out/bin/imagine
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          "$bin" version
+          cat > "$RUNNER_TEMP/badge.svg" <<'SVG'
+          <svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><circle cx="60" cy="60" r="54" fill="#2563eb"/><text x="60" y="70" font-size="28" text-anchor="middle" fill="#fff">svg</text></svg>
+          SVG
+          "$bin" svg render --input "$RUNNER_TEMP/badge.svg" -o "$RUNNER_TEMP/badge.png" --width 120
+          "$bin" text render --text "resvg linked" -o "$RUNNER_TEMP/text.png" --width 300 --size 28
+          "$bin" png compose --base "$RUNNER_TEMP/badge.png" --layer "$RUNNER_TEMP/text.png,x=0,y=0" -o "$RUNNER_TEMP/composed.png"
+          ls -l "$RUNNER_TEMP/badge.png" "$RUNNER_TEMP/text.png" "$RUNNER_TEMP/composed.png"
 
       - name: Stage asset
         shell: bash
@@ -132,16 +214,22 @@ jobs:
 
             Windows — download `imagine-windows-x86_64.exe` (or `-aarch64`) below and put it on your `PATH`.
 
+            ### What's in the binaries
+
+            `svg render`, `text render` and `png compose` are **enabled by default** in
+            every released binary except `imagine-windows-aarch64.exe` (resvg has no
+            cross-buildable aarch64 Windows static library; that asset stays SVG-free).
+
             ### Assets
-            | Platform | File |
-            |----------|------|
-            | Linux x86_64 | `imagine-linux-x86_64`, `imagine-linux-x86_64.tar.gz` |
-            | Linux arm64 | `imagine-linux-aarch64`, `imagine-linux-aarch64.tar.gz` |
-            | macOS x86_64 | `imagine-macos-x86_64`, `imagine-macos-x86_64.tar.gz` |
-            | macOS arm64 | `imagine-macos-aarch64`, `imagine-macos-aarch64.tar.gz` |
-            | Windows x86_64 | `imagine-windows-x86_64.exe` |
-            | Windows arm64 | `imagine-windows-aarch64.exe` |
-            | Agent skill | `imagine-skill.tar.gz` |
+            | Platform | File | SVG support |
+            |----------|------|-------------|
+            | Linux x86_64 | `imagine-linux-x86_64`, `imagine-linux-x86_64.tar.gz` | yes |
+            | Linux arm64 | `imagine-linux-aarch64`, `imagine-linux-aarch64.tar.gz` | yes |
+            | macOS x86_64 | `imagine-macos-x86_64`, `imagine-macos-x86_64.tar.gz` | yes |
+            | macOS arm64 | `imagine-macos-aarch64`, `imagine-macos-aarch64.tar.gz` | yes |
+            | Windows x86_64 | `imagine-windows-x86_64.exe` | yes |
+            | Windows arm64 | `imagine-windows-aarch64.exe` | no |
+            | Agent skill | `imagine-skill.tar.gz` | — |
 
             Verify downloads against `SHA256SUMS`.
           files: |

@@ -202,8 +202,8 @@ base_url = "http://127.0.0.1:$PORT/v1/images/generations"
 auth = "none"
 
 [models."$MODEL_KEY".defaults]
-size = "2048x2048"
-steps = 40
+size = "1024x1024"
+steps = 20
 EOF
     ok "added model \"$MODEL_KEY\" to $CONFIG_PATH"
   fi

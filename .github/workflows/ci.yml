@@ -14,6 +14,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  ZIG_VERSION: 0.16.0
+  # Must match vendor/resvg/resvg.h (RESVG_VERSION there) and release.yml.
+  RESVG_VERSION: v0.47.0
+
 jobs:
   test:
     name: build & test (${{ matrix.os }})
@@ -28,13 +33,60 @@ jobs:
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: ${{ env.ZIG_VERSION }}
 
       - name: Build
         run: zig build -Doptimize=ReleaseSafe
 
       - name: Test
         run: zig build test
+
+  svg:
+    name: svg overlay (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build resvg C API (static)
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/resvg"
+          curl -sSL --retry 3 --retry-delay 2 \
+            "https://codeload.github.com/linebender/resvg/tar.gz/refs/tags/${RESVG_VERSION}" -o "$RUNNER_TEMP/resvg.tgz"
+          mkdir -p "$src"
+          tar xzf "$RUNNER_TEMP/resvg.tgz" -C "$src" --strip-components=1
+          cargo build --release -p resvg-capi --manifest-path "$src/Cargo.toml"
+          ls -l "$src/target/release/" | grep -i resvg
+
+      - name: Build & test with SVG support
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/resvg"
+          args="-Doptimize=ReleaseSafe -Dsvg-overlay=true -Dresvg-include=$src/crates/c-api -Dresvg-lib=$src/target/release"
+          zig build test $args
+          zig build $args
+
+      - name: Smoke test svg/text/compose
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/badge.svg" <<'SVG'
+          <svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><circle cx="60" cy="60" r="54" fill="#2563eb"/><text x="60" y="70" font-size="28" text-anchor="middle" fill="#fff">svg</text></svg>
+          SVG
+          zig-out/bin/imagine svg render --input "$RUNNER_TEMP/badge.svg" -o "$RUNNER_TEMP/badge.png" --width 120
+          zig-out/bin/imagine text render --text "resvg linked" -o "$RUNNER_TEMP/text.png" --width 300 --size 28
+          zig-out/bin/imagine png compose --base "$RUNNER_TEMP/badge.png" --layer "$RUNNER_TEMP/text.png,x=0,y=0" -o "$RUNNER_TEMP/composed.png"
+          ls -l "$RUNNER_TEMP/badge.png" "$RUNNER_TEMP/text.png" "$RUNNER_TEMP/composed.png"
 
   fmt:
     name: zig fmt
@@ -45,7 +97,7 @@ jobs:
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: ${{ env.ZIG_VERSION }}
 
       - name: Check formatting
         run: zig fmt --check build.zig src

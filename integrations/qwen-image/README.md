@@ -57,7 +57,7 @@ Server flags (or the matching `QWEN_IMAGE_*` environment variables):
 
 ```bash
 qwen-image-server --help
-qwen-image-server --port 8000 --steps 40 --size 2048x2048   # defaults
+qwen-image-server --port 8000 --steps 40 --size 1024x1024   # defaults
 qwen-image-server --offload                                  # small-VRAM GPUs
 qwen-image-server --mock                                     # placeholder images
 ```
@@ -89,8 +89,8 @@ base_url = "http://127.0.0.1:8000/v1/images/generations"
 auth = "none"            # a local server takes no credential — no key needed
 
 [models."qwen-image-2.1".defaults]
-size = "2048x2048"
-steps = 40
+size = "1024x1024"
+steps = 20
 ```
 
 ```bash
@@ -118,7 +118,7 @@ Qwen-specific syntax:
 |---------|---------------|-------|
 | `-p, --prompt` | `prompt` | required |
 | `-m, --model` | `model` | logical name from config; `api_model` is sent |
-| `-s, --size` | `size` | `WIDTHxHEIGHT` or an aspect-ratio token (below) |
+| `-s, --size` | `size` | `WIDTHxHEIGHT` or an aspect-ratio token (below); server default 1024x1024 |
 | `--width/--height` | `size` | combined into `WIDTHxHEIGHT` |
 | `-n, --n` | `n` (per call: 1) | imagine fans `-n` into parallel calls, `-c` sets the fan-out |
 | `--steps` | `num_inference_steps` | denoising steps; server default 40 |
@@ -133,7 +133,8 @@ results and errors, for both servers.
 ### Native aspect ratios
 
 Qwen-Image-2.1 is trained on 2K shapes; `--size` also accepts the model card's
-ratio tokens and resolves them to pixels before the request is sent:
+ratio tokens and resolves them to pixels before the request is sent (opt-in —
+they cost roughly 6x the time of the 1024 default on Apple Silicon):
 
 | `--size` | pixels |
 |----------|--------|
@@ -142,9 +143,10 @@ ratio tokens and resolves them to pixels before the request is sent:
 | `3:2` / `2:3` | 2528x1696 / 1696x2528 |
 | `16:9` / `9:16` | 2752x1536 / 1536x2752 |
 
-Anything else (for example `--size 1024x1024`) is passed through unchanged; with
-no size at all, the server's default (2048x2048) applies. The token lookup
-happens in `imagine`, because vLLM-Omni rejects a `size` without an `x`.
+Anything else (for example `--size 1536x1024`) is passed through unchanged; with
+no size at all, the server's default (**1024x1024** — the 2K shapes above are
+opt-in) applies. The token lookup happens in `imagine`, because vLLM-Omni
+rejects a `size` without an `x`.
 
 ### Transparent (RGBA) images
 

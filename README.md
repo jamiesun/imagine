@@ -132,7 +132,9 @@ a transparent PNG at a controlled size. `text render` generates a styled text
 SVG layer and renders it to PNG. `png compose` overlays one or more PNG layers
 over a base PNG in the order the layers are provided. PNG decoding and encoding
 uses vendored `stb_image.h` / `stb_image_write.h`; SVG rendering uses the
-optional `resvg` C API build.
+`resvg` C API, which **every released binary enables by default**
+(`imagine-windows-aarch64.exe` is the one exception — resvg has no
+cross-buildable aarch64 Windows static library).
 
 ```bash
 imagine svg render --input badge.svg -o badge.png --width 256
@@ -170,10 +172,13 @@ This is useful for product images: text layers usually use `normal`, shadow
 layers use `multiply`, highlights use `screen`, and watermarks use `normal`
 with reduced `opacity`.
 
-The Makefile default build enables this feature through `-Dsvg-overlay=true`;
-install the `resvg` C API library first. Use `make build-core` for a portable
-core binary without SVG/text rendering. If you need to use headers or libraries
-from another location, pass:
+This only matters when building from source — the release assets already have it.
+The Makefile default build enables the feature through `-Dsvg-overlay=true` and
+needs the resvg C API (0.47.0) on the machine. Build it from source with
+`cargo build --release -p resvg-capi` in a checkout of
+[`linebender/resvg`](https://github.com/linebender/resvg) (that is what CI does),
+or install a packaged copy. Use `make build-core` for a portable core binary
+without SVG/text rendering. For headers or libraries in another location, pass:
 
 ```bash
 zig build -Dsvg-overlay=true -Dresvg-include=/path/to/include -Dresvg-lib=/path/to/lib
@@ -218,13 +223,13 @@ base_url = "http://127.0.0.1:8000/v1/images/generations"
 auth = "none"                 # local servers take no key
 
 [models."qwen-image-2.1".defaults]
-size = "2048x2048"            # or a native ratio token: 16:9 4:3 3:2 ...
-steps = 40
+size = "1024x1024"            # or a native 2K ratio token: 16:9 4:3 3:2 ...
+steps = 20
 ```
 
 ```bash
 imagine generate -m qwen-image-2.1 -p "a neon shop sign reading QWEN IMAGE 2.1" -o sign.png
-imagine generate -m qwen-image-2.1 -p "a wide sticker sheet of dragons" --size 16:9 --steps 40 -o wide.png
+imagine generate -m qwen-image-2.1 -p "a wide sticker sheet of dragons" --size 16:9 --steps 20 -o wide.png
 ```
 
 `--size` also accepts the model's native ratio tokens (`1:1`, `4:3`, `3:4`,

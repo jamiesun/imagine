@@ -1042,8 +1042,8 @@ pub const template =
     \\# auth = "none"
     \\
     \\# [models."qwen-image-2.1".defaults]
-    \\# size = "2048x2048"       # or an aspect-ratio token: 16:9 4:3 3:2 ...
-    \\# steps = 40               # = num_inference_steps
+    \\# size = "1024x1024"      # or a 2K ratio token: 16:9 4:3 3:2 ...
+    \\# steps = 20               # = num_inference_steps
     \\
 ;
 

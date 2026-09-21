@@ -125,8 +125,13 @@ imagine version | help
 - **Ephemeral 无配置文件模式**：无文件时用 `IMAGINE_BASE_URL` + `IMAGINE_MODEL` + 凭证合成单模型；`source` 标注；单模型可省略 `-m`。
 - 同模型多端点并发调度；`--json`/`--dry-run`/batch；config init/show/path。
 - `install.sh`（curl 一键，OS 探测，下载预编译二进制并校验 SHA-256）、`Makefile`、`skills/imagine` 技能。
-- CI（Linux/macOS/Windows 构建+测试+`zig fmt`）与 release 工作流：tag 触发，交叉编译
-  Linux/macOS/Windows × `x86_64`/`arm64` 六个目标并发布 GitHub Release。
+- CI（Linux/macOS/Windows 构建+测试+`zig fmt`，另有 ubuntu 上的 `svg-overlay` 构建与
+  冒烟测试）与 release 工作流：tag 触发，在原生 runner 上构建 Linux/macOS/Windows ×
+  `x86_64`/`arm64` 六个目标并发布 GitHub Release。
+- **发布二进制默认带 SVG 能力**：每个目标先在原生 runner 上 `cargo build -p resvg-capi`
+  产出 `libresvg.a`（resvg 0.47.0，与 `vendor/resvg/resvg.h` 同版本），再以
+  `-Dsvg-overlay=true -Dresvg-lib=…` 链接，并对产物跑 `svg render`/`text render`/`png compose`
+  冒烟测试；唯一例外是 `imagine-windows-aarch64.exe`（无法交叉构建 resvg 静态库）。
 - **Qwen-Image-2.1 可选集成**：`qwen_image` 后端（统一参数 → `size`/`num_inference_steps`/
   `seed`/`output_format`）、`auth = "none"` 无鉴权端点、`--steps` 与 `IMAGINE_STEPS`，
   以及 `integrations/qwen-image/`（diffusers server + 安装脚本 + 文档）；同一契约也兼容
@@ -153,6 +158,8 @@ imagine version | help
 
 1. 改 `src/version.zig` 的 `string`（如 `0.2.0`），同步 `build.zig.zon` 的 `version`。
 2. 提交后打 tag：`git tag v0.2.0 && git push origin v0.2.0`。
-3. `.github/workflows/release.yml` 自动交叉编译六平台、打包技能与 `SHA256SUMS`、创建 Release。
+3. `.github/workflows/release.yml` 自动构建六平台（原生 runner；带 SVG 的目标先构建
+   `resvg-capi` 静态库再 `-Dsvg-overlay=true` 链接，并做 svg/text/compose 冒烟测试）、
+   打包技能与 `SHA256SUMS`、创建 Release。
    tag 必须与 `src/version.zig` 一致，否则 workflow 报错中止。
 4. 资产命名：`imagine-<os>-<arch>`（Windows 带 `.exe`），与 `install.sh` 下载路径一致。
