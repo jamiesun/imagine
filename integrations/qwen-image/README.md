@@ -27,6 +27,14 @@ self-contained venv, and writes a `qwen-image-server` launcher to
 `~/.local/bin`. Nothing is installed system-wide, and your imagine config is
 untouched unless you pass `--write-config`.
 
+The checkpoint is ~33 GB, so on a small internal disk put the cache on an
+external one — `--hf-home` is recorded in the launcher, so restarts keep using
+the same cache:
+
+```bash
+integrations/qwen-image/install.sh --hf-home /Volumes/PSSD/qwen-image/hf --prefetch
+```
+
 ```bash
 # Piped install (no checkout needed):
 curl -fsSL https://raw.githubusercontent.com/talkincode/imagine/main/integrations/qwen-image/install.sh | sh
@@ -39,6 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/talkincode/imagine/main/integration
 | `--bin-dir DIR` | launcher dir (default `~/.local/bin`) |
 | `--python CMD` | interpreter used to create the venv (default `python3`) |
 | `--model ID` | checkpoint to serve (default `Qwen/Qwen-Image-2.1`) |
+| `--hf-home DIR` | weight cache location (default `$HF_HOME`; point it at an external disk — the checkpoint is ~33 GB) |
 | `--prefetch` | download weights into the Hugging Face cache now |
 | `--mock` | install only `fastapi`/`uvicorn`/`pillow` — wiring tests, no torch |
 | `--write-config` | append the model block below to the imagine config |
@@ -57,11 +66,13 @@ The server reports what it is doing on `/healthz` (model, device, dtype,
 whether the pipeline is loaded) and lists itself on `/v1/models`.
 
 Hardware: the visual generation component is 7B parameters (~14 GB in bf16),
-and the checkpoint ships its text encoder and VAE on top of that, so a CUDA GPU
-is the intended environment. `--offload` streams weights per module for GPUs
-with less memory (the model card's `enable_model_cpu_offload()`); CPU and MPS
-runs are possible but far slower. Downloads are cached by `huggingface_hub`
-(`HF_HOME` moves that cache).
+and the checkpoint ships its text encoder and VAE on top of that — about 33 GB
+total, so it needs a CUDA GPU or an Apple Silicon machine with plenty of unified
+memory (an M2 Ultra / 64 GB loads it in fp16 on MPS). `--offload` streams
+weights per module when memory is tight (the model card's
+`enable_model_cpu_offload()`); CPU-only runs are possible but far slower.
+Downloads are cached by `huggingface_hub` (`HF_HOME` moves that cache — see
+`--hf-home` above).
 
 ## 2. Point imagine at it
 
@@ -112,7 +123,7 @@ Qwen-specific syntax:
 | `-n, --n` | `n` (per call: 1) | imagine fans `-n` into parallel calls, `-c` sets the fan-out |
 | `--steps` | `num_inference_steps` | denoising steps; server default 40 |
 | `--seed` | `seed` | reproducible output |
-| `--format` | `output_format` | `png` (keeps RGBA) / `jpeg` / `webp` |
+| `--format` | `output_format` | `png` (keeps RGBA) / `webp` (keeps RGBA) / `jpeg` (flattens onto white) |
 | `--compression` | `output_compression` | `0-100`; PNG encode level, JPEG/WebP quality |
 | `--quality` | *(not sent)* | Qwen-Image quality is a function of `--steps` |
 

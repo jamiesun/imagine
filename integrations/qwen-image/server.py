@@ -93,7 +93,13 @@ def encode_image(image, output_format: str, compression: int) -> str:
         level = 0 if compression >= 100 else max(0, min(9, round((100 - compression) * 9 / 99)))
         image.save(buf, "PNG", compress_level=level)
     elif output_format == "jpeg":
-        image.convert("RGB").save(buf, "JPEG", quality=compression)
+        # JPEG has no alpha channel: flatten transparency onto white first,
+        # otherwise transparent pixels encode as black.
+        from PIL import Image
+
+        flat = Image.new("RGB", image.size, (255, 255, 255))
+        flat.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
+        flat.save(buf, "JPEG", quality=compression)
     else:
         image.save(buf, "WEBP", quality=compression)
     return base64.b64encode(buf.getvalue()).decode("ascii")
@@ -181,13 +187,46 @@ class ImagePipeline:
 
 
 def mock_image(prompt: str, width: int, height: int, seed: int | None = None):
-    """Deterministic placeholder, so the HTTP wiring is testable without a GPU."""
-    from PIL import Image, ImageDraw
+    """Deterministic placeholder, so the HTTP wiring is testable without a GPU.
+
+    Transparent canvas plus a semi-transparent band, so a generated file shows
+    the real width/height and proves the alpha channel survived the round trip.
+    """
+    from PIL import Image, ImageDraw, ImageFont
 
     digest = sum(prompt.encode("utf-8")) + (seed or 0)
     color = (digest * 7 % 256, digest * 13 % 256, digest * 29 % 256, 255)
-    image = Image.new("RGBA", (width, height), color)
-    ImageDraw.Draw(image).text((16, 16), f"mock\n{prompt[:120]}", fill=(255, 255, 255, 255))
+
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    unit = max(4, min(width, height) // 24)
+    inset = unit * 3
+    draw.rounded_rectangle((inset, inset, width - inset, height - inset), radius=unit * 2, fill=color)
+    draw.rectangle(
+        (inset, height - inset - unit * 2, width - inset, height - inset - unit),
+        fill=color[:3] + (110,),  # 43% alpha: visible only if alpha survived
+    )
+
+    font_size = max(14, min(width, height) // 24)
+    try:  # Pillow >= 10 can size the built-in bitmap font; older ones cannot.
+        font = ImageFont.load_default(size=font_size)
+    except TypeError:
+        font = ImageFont.load_default()
+
+    import textwrap
+
+    wraps_at = max(20, int((width - inset * 4) / (font_size * 0.55)))
+    lines = textwrap.wrap(prompt, width=wraps_at)[:3] or [""]
+    if len(lines) == 3 and len("".join(lines)) < len(prompt):
+        lines[2] = lines[2][: max(1, wraps_at - 3)] + "..."
+    label = "mock - not model output\n{d}x{d}  seed={s}\nprompt: {p}".format(
+        width, height, seed, "\n        ".join(lines)
+    )
+    text_xy = (inset + unit * 2, inset + unit * 2)
+    box = draw.multiline_textbbox(text_xy, label, font=font, spacing=unit)
+    pad = unit
+    draw.rectangle((box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad), fill=(255, 255, 255, 230))
+    draw.multiline_text(text_xy, label, fill=(20, 20, 20, 255), font=font, spacing=unit)
     return image
 
 
@@ -329,7 +368,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dtype",
         default=env("QWEN_IMAGE_DTYPE", ""),
-        help="bfloat16|float16|float32 (default: bfloat16 on CUDA, float32 elsewhere)",
+        help="bfloat16|float16|float32 (default: bfloat16 on CUDA, float16 on MPS, float32 on CPU)",
     )
     parser.add_argument(
         "--offload",
@@ -354,7 +393,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     args.device = "cpu" if args.mock else pick_device(args.device)
-    args.dtype = args.dtype or ("bfloat16" if args.device == "cuda" else "float32")
+    # Half precision matters: float32 would double a ~33 GB checkpoint. CUDA
+    # prefers bf16, Metal has native fp16, and CPU only realistically runs fp32.
+    half = {"cuda": "bfloat16", "mps": "float16"}
+    args.dtype = args.dtype or half.get(args.device, "float32")
     if args.size:
         try:
             parse_size(args.size)  # fail fast on a bad default

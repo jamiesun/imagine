@@ -5,6 +5,7 @@
 # install this file — pip will keep the torch you already have when it satisfies
 # the minimum.
 torch>=2.4.0
+torchvision          # the pipeline's image processor imports it
 transformers>=5.17
 accelerate
 pillow
