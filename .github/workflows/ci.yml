@@ -57,22 +57,28 @@ jobs:
 
       - name: Build resvg C API (static)
         shell: bash
+        env:
+          RUSTFLAGS: -C panic=abort
         run: |
           set -euo pipefail
           src="$RUNNER_TEMP/resvg"
+          lib="$src/target/release"
           curl -sSL --retry 3 --retry-delay 2 \
             "https://codeload.github.com/linebender/resvg/tar.gz/refs/tags/${RESVG_VERSION}" -o "$RUNNER_TEMP/resvg.tgz"
           mkdir -p "$src"
           tar xzf "$RUNNER_TEMP/resvg.tgz" -C "$src" --strip-components=1
           cargo build --release -p resvg-capi --manifest-path "$src/Cargo.toml"
-          ls -l "$src/target/release/" | grep -i resvg
+          # Zig ships no libgcc_eh for the musl/mingw targets and rustc leaves
+          # the unwinder to the final link; keep it next to libresvg.a.
+          cp "$(dirname "$(gcc -print-libgcc-file-name)")/libgcc_eh.a" "$lib/"
+          ls -l "$lib" | grep -iE "resvg|gcc"
 
       - name: Build & test with SVG support
         shell: bash
         run: |
           set -euo pipefail
           src="$RUNNER_TEMP/resvg"
-          args="-Doptimize=ReleaseSafe -Dsvg-overlay=true -Dresvg-include=$src/crates/c-api -Dresvg-lib=$src/target/release"
+          args="-Doptimize=ReleaseSafe -Dsvg-overlay=true -Dresvg-include=$src/crates/c-api -Dresvg-lib=$src/target/release -Dresvg-libs=gcc_eh"
           zig build test $args
           zig build $args
 

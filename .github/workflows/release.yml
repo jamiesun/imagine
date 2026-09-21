@@ -128,16 +128,15 @@ jobs:
           ( cd "$RUNNER_TEMP" && tar xzf resvg.tgz -C resvg --strip-components=1 )
           cargo build --release -p resvg-capi --manifest-path "$src/Cargo.toml" --target "${{ matrix.rust_target }}"
           # Zig ships no DWARF unwinder (libgcc_eh) for musl/mingw targets and
-          # rustc leaves those references to the final link, so fold the
-          # toolchain's libgcc into the archive.
+          # rustc leaves those references to the final link, so put the
+          # toolchain's libgcc_eh.a next to libresvg.a and link it explicitly.
           if [ -n "${{ matrix.gcc }}" ]; then
-            gcc_lib="$(${{ matrix.gcc }} -print-libgcc-file-name)"
-            echo "merging $gcc_lib into libresvg.a"
-            mkdir -p "$lib/merge"
-            ( cd "$lib/merge" && ar x ../libresvg.a && ar x "$gcc_lib" && ar rcs ../libresvg.a ./*.o )
-            rm -rf "$lib/merge"
+            gcc_dir="$(dirname "$(${{ matrix.gcc }} -print-libgcc-file-name)")"
+            echo "libgcc dir: $gcc_dir"
+            ls -l "$gcc_dir"/libgcc*.a
+            cp "$gcc_dir/libgcc_eh.a" "$lib/" 2>/dev/null || cp "$gcc_dir/libgcc.a" "$lib/libgcc_eh.a"
           fi
-          ls -l "$lib" | grep -i resvg
+          ls -l "$lib" | grep -iE "resvg|gcc" 
 
       - name: Build imagine
         shell: bash
@@ -147,6 +146,9 @@ jobs:
           if [ "${{ matrix.svg }}" = "true" ]; then
             src="$RUNNER_TEMP/resvg"
             args="$args -Dsvg-overlay=true -Dresvg-include=$src/crates/c-api -Dresvg-lib=$src/target/${{ matrix.rust_target }}/release"
+            if [ -n "${{ matrix.gcc }}" ]; then
+              args="$args -Dresvg-libs=gcc_eh"
+            fi
           fi
           echo "zig build $args"
           zig build $args

@@ -7,6 +7,11 @@ pub fn build(b: *std.Build) void {
     const svg_overlay = b.option(bool, "svg-overlay", "Enable SVG/PNG composition via resvg C API") orelse false;
     const resvg_include = b.option([]const u8, "resvg-include", "Directory containing resvg.h");
     const resvg_lib = b.option([]const u8, "resvg-lib", "Directory containing libresvg");
+    // Extra system libraries to link alongside resvg. Rust staticlibs leave the
+    // DWARF unwinder (_Unwind_*) to the final link, and Zig ships no libgcc_eh
+    // for musl/mingw targets: pass e.g. -Dresvg-libs=gcc_eh with the toolchain's
+    // libgcc_eh.a copied next to libresvg.a.
+    const resvg_libs = b.option([]const u8, "resvg-libs", "Comma-separated extra libs to link with resvg (e.g. gcc_eh)");
 
     const exe = b.addExecutable(.{
         .name = "imagine",
@@ -43,6 +48,15 @@ pub fn build(b: *std.Build) void {
         // use exactly the library passed via -Dresvg-lib (pkg-config happily
         // returns a Mach-O/ELF library from another platform otherwise).
         exe.root_module.linkSystemLibrary("resvg", .{ .use_pkg_config = .no });
+        if (resvg_libs) |libs| {
+            var it = std.mem.splitScalar(u8, libs, ',');
+            while (it.next()) |name| {
+                const trimmed = std.mem.trim(u8, name, " ");
+                if (trimmed.len > 0) {
+                    exe.root_module.linkSystemLibrary(trimmed, .{ .use_pkg_config = .no });
+                }
+            }
+        }
     }
     b.installArtifact(exe);
 
@@ -80,6 +94,15 @@ pub fn build(b: *std.Build) void {
             unit_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
         }
         unit_tests.root_module.linkSystemLibrary("resvg", .{ .use_pkg_config = .no });
+        if (resvg_libs) |libs| {
+            var it = std.mem.splitScalar(u8, libs, ',');
+            while (it.next()) |name| {
+                const trimmed = std.mem.trim(u8, name, " ");
+                if (trimmed.len > 0) {
+                    unit_tests.root_module.linkSystemLibrary(trimmed, .{ .use_pkg_config = .no });
+                }
+            }
+        }
     }
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
