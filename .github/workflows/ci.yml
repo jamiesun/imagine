@@ -86,6 +86,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Self-containment check: without the resvg tree on disk (and thus no
+          # usable rpath) the binary must still render.
+          mv "$RUNNER_TEMP/resvg" "$RUNNER_TEMP/resvg.hidden"
           cat > "$RUNNER_TEMP/badge.svg" <<'SVG'
           <svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><circle cx="60" cy="60" r="54" fill="#2563eb"/><text x="60" y="70" font-size="28" text-anchor="middle" fill="#fff">svg</text></svg>
           SVG

@@ -167,8 +167,15 @@ jobs:
           bin=zig-out/bin/imagine
           if [ -f "$bin.exe" ]; then bin="$bin.exe"; fi
           echo "binary under test: $bin"
+          # The asset must be self-contained: hide the resvg build tree so a
+          # dynamic dependency cannot be satisfied through the rpath.
+          mv "$RUNNER_TEMP/resvg" "$RUNNER_TEMP/resvg.hidden" 2>/dev/null || true
           if command -v objdump >/dev/null 2>&1; then
             objdump -p "$bin" 2>/dev/null | grep -i "DLL Name" || true
+            if objdump -p "$bin" 2>/dev/null | grep -qi "resvg.dll"; then
+              echo "::error::$bin still imports resvg.dll (link it statically)"
+              fail=1
+            fi
           fi
           "$bin" version || fail=1
           cat > "$RUNNER_TEMP/badge.svg" <<'SVG'

@@ -47,13 +47,16 @@ pub fn build(b: *std.Build) void {
         // Never let pkg-config inject a host-platform resvg: cross builds must
         // use exactly the library passed via -Dresvg-lib (pkg-config happily
         // returns a Mach-O/ELF library from another platform otherwise).
-        exe.root_module.linkSystemLibrary("resvg", .{ .use_pkg_config = .no });
+        // Force the static archive: resvg-capi also emits a shared library,
+        // and zig prefers the dynamic one by default (which would leave the
+        // released binary depending on libresvg.so/dylib/resvg.dll).
+        exe.root_module.linkSystemLibrary("resvg", .{ .use_pkg_config = .no, .preferred_link_mode = .static });
         if (resvg_libs) |libs| {
             var it = std.mem.splitScalar(u8, libs, ',');
             while (it.next()) |name| {
                 const trimmed = std.mem.trim(u8, name, " ");
                 if (trimmed.len > 0) {
-                    exe.root_module.linkSystemLibrary(trimmed, .{ .use_pkg_config = .no });
+                    exe.root_module.linkSystemLibrary(trimmed, .{ .use_pkg_config = .no, .preferred_link_mode = .static });
                 }
             }
         }
@@ -93,13 +96,13 @@ pub fn build(b: *std.Build) void {
         } else {
             unit_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
         }
-        unit_tests.root_module.linkSystemLibrary("resvg", .{ .use_pkg_config = .no });
+        unit_tests.root_module.linkSystemLibrary("resvg", .{ .use_pkg_config = .no, .preferred_link_mode = .static });
         if (resvg_libs) |libs| {
             var it = std.mem.splitScalar(u8, libs, ',');
             while (it.next()) |name| {
                 const trimmed = std.mem.trim(u8, name, " ");
                 if (trimmed.len > 0) {
-                    unit_tests.root_module.linkSystemLibrary(trimmed, .{ .use_pkg_config = .no });
+                    unit_tests.root_module.linkSystemLibrary(trimmed, .{ .use_pkg_config = .no, .preferred_link_mode = .static });
                 }
             }
         }
