@@ -54,11 +54,13 @@ jobs:
             rust_target: aarch64-apple-darwin
             zig_target: aarch64-macos
             svg: true
+          # Windows uses the SEH exception model, so rustc's staticlib has no
+          # DWARF unwinder references and no libgcc_eh is needed here (mingw's
+          # libgcc_eh.a is a DLL import library and would add a runtime dep).
           - asset: imagine-windows-x86_64.exe
             runner: windows-latest
             rust_target: x86_64-pc-windows-gnu
             zig_target: x86_64-windows
-            gcc: x86_64-w64-mingw32-gcc
             svg: true
           # resvg cannot be cross-built for aarch64 Windows here, so this asset
           # stays SVG-free (documented in the release notes).
