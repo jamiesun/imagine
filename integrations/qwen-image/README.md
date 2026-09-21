@@ -208,6 +208,81 @@ imagine generate -m qwen-image-2.1 -p "wiring check" --size 16:9 --steps 8 \
 server's error text, e.g. `--steps 500` ->
 `errors: ["HTTP 400: num_inference_steps must be between 1 and 200, got: 500"]`.
 
+## 5. Run it as a macOS LaunchDaemon
+
+`install.sh` leaves the server as a foreground process. To have a Mac serve the
+model unattended (starts at boot, restarts after a crash), wrap it in a
+LaunchDaemon.
+
+> **macOS gotcha #1 — external volumes.** TCC blocks launchd-spawned processes
+> from removable volumes, including as root: a daemon whose venv or weights sit
+> under `/Volumes/...` dies with `Operation not permitted` / exit code
+> `78: EX_CONFIG`, and even a probe like
+> `sudo launchctl submit -l probe -- /bin/ls /Volumes/ExtDISK` is denied. Keep
+> the venv **and** the weights on the internal disk
+> (`install.sh --home ~/.imagine/qwen-image --hf-home ~/.imagine/qwen-image/hf-home --prefetch`),
+> or grant Full Disk Access to the venv's `python` binary in
+> System Settings → Privacy & Security → Full Disk Access.
+
+> **macOS gotcha #2 — log directory ownership.** `StandardOutPath` /
+> `StandardErrorPath` must be writable by the user the job runs as. A log
+> directory created with `sudo mkdir` (owned by `root:wheel`) makes launchd fail
+> the job with the same `78: EX_CONFIG` before the program even runs:
+> `sudo mkdir -p ~/Library/Logs/qwen-image && sudo chown -R "$(id -un):$(id -gn)" ~/Library/Logs/qwen-image`.
+
+`~/.imagine/qwen-image/server/run-daemon.sh` (waits for the weights, then hands
+over — `KeepAlive` restarts it if the process dies):
+
+```sh
+#!/bin/sh
+ROOT="$HOME/.imagine/qwen-image"
+WEIGHTS="$ROOT/weights/Qwen-Image-2.1"
+for _ in $(seq 1 120); do
+  [ -f "$WEIGHTS/model_index.json" ] && break
+  echo "$(date '+%F %T') waiting for $WEIGHTS"
+  sleep 5
+done
+[ -f "$WEIGHTS/model_index.json" ] || exit 1
+exec "$ROOT/server/venv/bin/python" "$ROOT/server/server.py" \
+  --model "$WEIGHTS" --host 127.0.0.1 --port 8000
+```
+
+`/Library/LaunchDaemons/com.imagine.qwen-image.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.imagine.qwen-image</string>
+    <key>ProgramArguments</key>
+    <array><string>/Users/&lt;you&gt;/.imagine/qwen-image/server/run-daemon.sh</string></array>
+    <key>UserName</key><string>&lt;you&gt;</string>
+    <key>GroupName</key><string>staff</string>
+    <key>EnvironmentVariables</key>
+    <dict><key>HF_HOME</key><string>/Users/&lt;you&gt;/.imagine/qwen-image/hf-home</string></dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+    <key>ThrottleInterval</key><integer>30</integer>
+    <key>WorkingDirectory</key><string>/Users/&lt;you&gt;/.imagine/qwen-image</string>
+    <key>StandardOutPath</key><string>/Users/&lt;you&gt;/Library/Logs/qwen-image/daemon.out.log</string>
+    <key>StandardErrorPath</key><string>/Users/&lt;you&gt;/Library/Logs/qwen-image/daemon.err.log</string>
+</dict>
+</plist>
+```
+
+```bash
+sudo cp com.imagine.qwen-image.plist /Library/LaunchDaemons/
+sudo chown root:wheel /Library/LaunchDaemons/com.imagine.qwen-image.plist
+sudo chmod 644 /Library/LaunchDaemons/com.imagine.qwen-image.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.imagine.qwen-image.plist
+sudo launchctl print system/com.imagine.qwen-image | grep -E "state|pid"   # state = running
+curl -s http://127.0.0.1:8000/healthz
+```
+
+`KeepAlive` is verifiable: `sudo pkill -f server.py` and the job comes back with
+`runs = 2` after the throttle interval.
+
 ## Troubleshooting
 
 - **`imagine models` shows no key / not ready** — with `auth = "none"` it is
