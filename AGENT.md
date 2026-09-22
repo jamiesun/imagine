@@ -156,6 +156,17 @@ imagine version | help
 
 ### 发布流程
 
+> `talkincode/imagine` 是 `jamiesun/imagine` 的 **fork**，而 GitHub 默认不为 fork 的
+> push 事件创建 workflow 运行（本仓库历史里 push 触发次数为 0，只有 `workflow_dispatch`）。
+> 因此打 tag 后请显式触发一次：
+>
+> ```bash
+> gh workflow run release -R talkincode/imagine -f tag=vX.Y.Z
+> ```
+>
+> 若想让 tag 推送自动触发，需要在仓库 Actions 页面为 fork 启用 workflows（网页操作），
+> 或用 `PUT /repos/{owner}/{repo}/actions/workflows/{id}/enable`。
+
 1. 改 `src/version.zig` 的 `string`（如 `0.2.0`），同步 `build.zig.zon` 的 `version`。
 2. 提交后打 tag：`git tag v0.2.0 && git push origin v0.2.0`。
 3. `.github/workflows/release.yml` 自动构建六平台（原生 runner；带 SVG 的目标先构建
