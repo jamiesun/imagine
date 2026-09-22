@@ -156,6 +156,10 @@ imagine version | help
 
 ### 发布流程
 
+> **仓库拓扑**：`talkincode/imagine`（fork）是**发布主仓库** —— `install.sh`、Homebrew tap
+> 与 README 的下载地址都指向它；`jamiesun/imagine` 是**源仓库**，只做代码镜像（同步命令见
+> 本节末尾）。发布只在 fork 上进行。
+>
 > **为什么用脚本**：`talkincode/imagine` 是 `jamiesun/imagine` 的 **fork**，而 GitHub
 > 不为 fork 的 push 事件创建 workflow 运行（本仓库历史里 push 触发次数为 0，
 > `workflow_dispatch` 正常；API 显式 enable workflow 后仍然如此）。也就是说
@@ -181,3 +185,15 @@ imagine version | help
    打包技能与 `SHA256SUMS`、创建 Release。
    tag 必须与 `src/version.zig` 一致，否则 workflow 报错中止。
 4. 资产命名：`imagine-<os>-<arch>`（Windows 带 `.exe`），与 `install.sh` 下载路径一致。
+
+### 同步代码到源仓库
+
+fork 的 push 不触发 workflow，源仓库的 push 会（CI 在那边跑得起来）。代码镜像同步：
+
+```bash
+git remote add source git@github.com:jamiesun/imagine.git   # 只需一次
+git push source main
+```
+
+**不要**把 tag 推到源仓库：那边的 `release` 工作流是 `on: push: tags`，会在两个仓库
+各生成一份 Release（且与 fork 的产物重复）。
