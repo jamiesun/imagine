@@ -318,7 +318,13 @@ make test-svg
 make build RESVG_LIB=/path/to/lib
 make fmt        # zig fmt
 make help       # list targets
+scripts/release.sh 0.4.0   # bump + tag + push + trigger the release workflow
 ```
+
+Releases are triggered with `scripts/release.sh` (or
+`gh workflow run release -f tag=vX.Y.Z`): this repository is a fork, and GitHub
+does not start push-triggered workflows for forks, so pushing a tag alone does
+not publish anything.
 
 The optional local backend ships its own installer and tests-free server:
 `integrations/qwen-image/install.sh --mock` installs a light venv, and

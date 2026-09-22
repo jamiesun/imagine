@@ -156,19 +156,26 @@ imagine version | help
 
 ### 发布流程
 
-> `talkincode/imagine` 是 `jamiesun/imagine` 的 **fork**，而 GitHub 默认不为 fork 的
-> push 事件创建 workflow 运行（本仓库历史里 push 触发次数为 0，只有 `workflow_dispatch`）。
-> 因此打 tag 后请显式触发一次：
+> **为什么用脚本**：`talkincode/imagine` 是 `jamiesun/imagine` 的 **fork**，而 GitHub
+> 不为 fork 的 push 事件创建 workflow 运行（本仓库历史里 push 触发次数为 0，
+> `workflow_dispatch` 正常；API 显式 enable workflow 后仍然如此）。也就是说
+> `git push --tags` **不会**发版，必须显式把 tag 交给 workflow。
+>
+> 一条命令完成全部步骤（bump → 本地测试 → tag → push → 触发发布 → 跟随日志）：
 >
 > ```bash
-> gh workflow run release -R talkincode/imagine -f tag=vX.Y.Z
+> scripts/release.sh 0.4.0        # 发新版本
+> scripts/release.sh --current    # 发当前 src/version.zig 里的版本
+> scripts/release.sh 0.4.0 --no-watch
 > ```
 >
-> 若想让 tag 推送自动触发，需要在仓库 Actions 页面为 fork 启用 workflows（网页操作），
-> 或用 `PUT /repos/{owner}/{repo}/actions/workflows/{id}/enable`。
+> 只想手动触发一次已有 tag 的发布：
+> `gh workflow run release -R talkincode/imagine -f tag=vX.Y.Z`。
 
-1. 改 `src/version.zig` 的 `string`（如 `0.2.0`），同步 `build.zig.zon` 的 `version`。
-2. 提交后打 tag：`git tag v0.2.0 && git push origin v0.2.0`。
+1. 改 `src/version.zig` 的 `string`（如 `0.2.0`），同步 `build.zig.zon` 的 `version`
+   （`scripts/release.sh X.Y.Z` 会自动完成这一步并提交）。
+2. 提交后打 tag 并推送：`git tag v0.2.0 && git push origin v0.2.0`
+   （脚本会做，并额外 dispatch 一次 release workflow）。
 3. `.github/workflows/release.yml` 自动构建六平台（原生 runner；带 SVG 的目标先构建
    `resvg-capi` 静态库再 `-Dsvg-overlay=true` 链接，并做 svg/text/compose 冒烟测试）、
    打包技能与 `SHA256SUMS`、创建 Release。
