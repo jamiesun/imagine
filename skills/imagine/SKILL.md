@@ -491,6 +491,8 @@ For product images, use `normal` for copy/text layers, `multiply` for shadows,
 | `GEMINI_API_KEY` | Credential for `gemini_video` (sent as `x-goog-api-key`). |
 | `LTX2_API_KEY` | Default credential for `ltx2_video`; a local service usually needs none (`auth = "none"`). |
 | `IMAGINE_AUTHORIZE_SPEND` | `1` / `true` / `yes` authorizes billable tasks for the whole run, like `--authorize-spend`. |
+| `IMAGINE_SPEND_OK` | Required (`1`) in addition to spend authorization for paid cloud video backends (Seedance, Gemini video). Agents must never set it themselves; ask the user. |
+| `IMAGINE_DENY_BACKENDS` | Comma list of backends/aliases/model substrings to refuse before any request (e.g. `seedance,gemini_video`). |
 | `IMAGINE_BASE_URL` | Ephemeral: endpoint URL (required when no file; the *create* URL for video). |
 | `IMAGINE_MODEL` | Ephemeral: logical model name (required when no file). |
 | `IMAGINE_API_MODEL` | Ephemeral: API `model` field (default: `IMAGINE_MODEL`). |

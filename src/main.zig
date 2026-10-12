@@ -348,6 +348,62 @@ fn batchSpendItems(ctx: Ctx, tasks: []const scheduler.Task) ![]const SpendItem {
     return items;
 }
 
+/// True when `name` (a model name or backend kind) appears in the
+/// comma-separated `IMAGINE_DENY_BACKENDS` list. Entries are case-insensitive
+/// and may be backend kinds or aliases (`seedance`, `ark_video`, ...) or a
+/// substring of the model name (`doubao-seedance`).
+fn denyListHit(deny: []const u8, kind: types.BackendKind, model: []const u8) ?[]const u8 {
+    var it = std.mem.tokenizeAny(u8, deny, ", ");
+    while (it.next()) |entry| {
+        if (types.BackendKind.fromString(entry)) |k| {
+            if (k == kind) return entry;
+        }
+        if (std.ascii.eqlIgnoreCase(entry, kind.toString())) return entry;
+        if (std.ascii.indexOfIgnoreCase(model, entry) != null) return entry;
+    }
+    return null;
+}
+
+/// A billable call to a paid cloud video backend (Seedance / Gemini video).
+/// Self-hosted LTX-2 is excluded: it only becomes billable when someone gives
+/// it a credential, and it is not a pay-per-second cloud product.
+fn isPaidVideo(item: SpendItem) bool {
+    return item.billable and item.kind.media() == .video and item.kind != .ltx2_video;
+}
+
+fn envTruthy(raw: ?[]const u8) bool {
+    const v = raw orelse return false;
+    return std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "yes");
+}
+
+const stop_and_ask =
+    "STOP: do not retry, do not switch to another paid backend, and do not set the override yourself.\n" ++
+    "Report this block to the user with model, clip count, duration and resolution, and wait for their explicit approval.\n";
+
+/// Hard guard that runs before spend authorization:
+///   * `IMAGINE_DENY_BACKENDS` refuses listed backends/models outright;
+///   * paid cloud video additionally needs `IMAGINE_SPEND_OK=1`, on top of
+///     `--authorize-spend`, so an agent adding the flag alone cannot spend.
+fn spendGuard(ctx: Ctx, items: []const SpendItem) !bool {
+    if (ctx.env.get("IMAGINE_DENY_BACKENDS")) |deny| {
+        for (items) |item| {
+            if (denyListHit(deny, item.kind, item.model)) |entry| {
+                try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "imagine: backend denied by IMAGINE_DENY_BACKENDS ({s}): model={s} backend={s}; nothing was sent\n", .{ entry, item.model, item.kind.toString() }));
+                try printErr(ctx.io, stop_and_ask);
+                return false;
+            }
+        }
+    }
+    if (envTruthy(ctx.env.get("IMAGINE_SPEND_OK"))) return true;
+    for (items) |item| {
+        if (!isPaidVideo(item)) continue;
+        try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "imagine: paid cloud video (model={s} backend={s}) requires IMAGINE_SPEND_OK=1 in addition to --authorize-spend; nothing was sent\n", .{ item.model, item.kind.toString() }));
+        try printErr(ctx.io, stop_and_ask);
+        return false;
+    }
+    return true;
+}
+
 /// Explicit spend authorization. `imagine` ships no price data, so instead of
 /// guessing a cost it prints the exact task plan and refuses to dispatch any
 /// billable task until the caller acknowledges it. Authorization comes from the
@@ -355,6 +411,7 @@ fn batchSpendItems(ctx: Ctx, tasks: []const scheduler.Task) ![]const SpendItem {
 /// deliberately not a config-file key: a shared config must not be able to
 /// authorize spending silently.
 fn authorizeSpend(ctx: Ctx, items: []const SpendItem, authorized: bool) !bool {
+    if (!try spendGuard(ctx, items)) return false;
     var billable: usize = 0;
     for (items) |item| {
         if (item.billable) billable += 1;
@@ -1372,6 +1429,23 @@ test "credentialStatus reports credentials, never availability" {
     two_paid[0].resolved_key = null;
     two_paid[1].resolved_key = null;
     try std.testing.expectEqualStrings("missing", credentialStatus(mixed));
+}
+
+test "deny list matches backend kinds, aliases and model substrings" {
+    try std.testing.expect(denyListHit("seedance", .seedance, "doubao-seedance-2-5") != null);
+    try std.testing.expect(denyListHit("ark_video", .seedance, "x") != null);
+    try std.testing.expect(denyListHit("foo, Doubao-Seedance", .seedance, "doubao-seedance-2-5") != null);
+    try std.testing.expect(denyListHit("seedance", .azure_flux, "MAI-Image-2.6") == null);
+    try std.testing.expect(denyListHit("", .seedance, "doubao-seedance") == null);
+}
+
+test "only billable cloud video needs IMAGINE_SPEND_OK" {
+    const req = types.GenRequest{ .prompt = "x", .api_model = "m" };
+    try std.testing.expect(isPaidVideo(.{ .model = "s", .kind = .seedance, .req = req, .billable = true }));
+    try std.testing.expect(isPaidVideo(.{ .model = "g", .kind = .gemini_video, .req = req, .billable = true }));
+    try std.testing.expect(!isPaidVideo(.{ .model = "s", .kind = .seedance, .req = req, .billable = false }));
+    try std.testing.expect(!isPaidVideo(.{ .model = "l", .kind = .ltx2_video, .req = req, .billable = true }));
+    try std.testing.expect(!isPaidVideo(.{ .model = "m", .kind = .azure_flux, .req = req, .billable = true }));
 }
 
 test "only a task that carries a credential is billable" {
