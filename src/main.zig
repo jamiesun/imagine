@@ -348,7 +348,6 @@ fn batchSpendItems(ctx: Ctx, tasks: []const scheduler.Task) ![]const SpendItem {
     return items;
 }
 
-
 /// True when `name` (a model name or backend kind) appears in the
 /// comma-separated `IMAGINE_DENY_BACKENDS` list. Entries are case-insensitive
 /// and may be backend kinds or aliases (`seedance`, `ark_video`, ...) or a
@@ -389,9 +388,7 @@ fn spendGuard(ctx: Ctx, items: []const SpendItem) !bool {
     if (ctx.env.get("IMAGINE_DENY_BACKENDS")) |deny| {
         for (items) |item| {
             if (denyListHit(deny, item.kind, item.model)) |entry| {
-                try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena,
-                    "imagine: backend denied by IMAGINE_DENY_BACKENDS ({s}): model={s} backend={s}; nothing was sent\n",
-                    .{ entry, item.model, item.kind.toString() }));
+                try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "imagine: backend denied by IMAGINE_DENY_BACKENDS ({s}): model={s} backend={s}; nothing was sent\n", .{ entry, item.model, item.kind.toString() }));
                 try printErr(ctx.io, stop_and_ask);
                 return false;
             }
@@ -400,9 +397,7 @@ fn spendGuard(ctx: Ctx, items: []const SpendItem) !bool {
     if (envTruthy(ctx.env.get("IMAGINE_SPEND_OK"))) return true;
     for (items) |item| {
         if (!isPaidVideo(item)) continue;
-        try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena,
-            "imagine: paid cloud video (model={s} backend={s}) requires IMAGINE_SPEND_OK=1 in addition to --authorize-spend; nothing was sent\n",
-            .{ item.model, item.kind.toString() }));
+        try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "imagine: paid cloud video (model={s} backend={s}) requires IMAGINE_SPEND_OK=1 in addition to --authorize-spend; nothing was sent\n", .{ item.model, item.kind.toString() }));
         try printErr(ctx.io, stop_and_ask);
         return false;
     }
