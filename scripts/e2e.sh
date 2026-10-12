@@ -10,6 +10,8 @@
 #
 # Requires python3 (for the mock) and a POSIX shell. Exits non-zero on failure.
 set -eu
+# Mock providers only: paid cloud video needs this second gate (see spendGate in src/main.zig).
+export IMAGINE_SPEND_OK=1
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 bin=${1:-}
