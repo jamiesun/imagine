@@ -169,7 +169,8 @@ pub const usage =
     \\      --quality <q>         low | medium | high | auto   (openai_image)
     \\      --seed <int>          Seed (where supported)
     \\      --steps <n>           Denoising steps (qwen_image num_inference_steps)
-    \\      --image <path|url>    Repeat for Qwen-Image (max 10); one for other backends
+    \\      --image <path|url>    Repeat for multi-ref (Qwen max 10, MAI max 5); one for others
+    \\      --images <p1,p2,...>  Multiple reference images (comma-separated)
     \\      --watermark           Force the provider watermark on
     \\      --no-watermark        Force the provider watermark off
     \\  -c, --concurrency <num>   Parallel requests (default: endpoint count)
@@ -225,7 +226,8 @@ pub const usage =
     \\MODELS:
     \\  Logical model names come from ~/.imagine/config.toml (dynamic), or from
     \\  ephemeral env when no config file exists. Run `imagine models`.
-    \\  backends: openai_image     (OpenAI-compatible /v1/images/generations)
+    \\  backends: mai_image        (Azure MAI image: T2I + multi-image edits)
+    \\            openai_image     (OpenAI-compatible /v1/images/generations)
     \\            azure_flux       (Azure FLUX; uses --width/--height)
     \\            qwen_image       (local Qwen-Image server; --size/--steps/--image edit)
     \\            volcengine_image (Ark Seedream image; env ARK_API_KEY)
@@ -402,6 +404,15 @@ fn parseGenerate(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
             g.ratio = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
         } else if (std.mem.eql(u8, name, "--image")) {
             try images.append(arena, (try cur.value(fs, arena)) orelse return missingValue(arena, name));
+        } else if (std.mem.eql(u8, name, "--images")) {
+            const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+            var it = std.mem.splitScalar(u8, v, ',');
+            while (it.next()) |item| {
+                const trimmed = std.mem.trim(u8, item, " \t");
+                if (trimmed.len > 0) {
+                    try images.append(arena, trimmed);
+                }
+            }
         } else if (std.mem.eql(u8, name, "--watermark")) {
             g.watermark = true;
         } else if (std.mem.eql(u8, name, "--no-watermark")) {
@@ -849,4 +860,23 @@ test "parse text render" {
     try std.testing.expectEqual(@as(u32, 72), t.size);
     try std.testing.expectEqual(@as(f32, 3), t.stroke_width);
     try std.testing.expectEqualStrings("center", t.text_align);
+}
+
+test "parse generate supports repeated --image and comma --images" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const p1 = try parseArgs(a, &.{ "generate", "-m", "m", "-p", "hi", "--image", "1.png", "--image", "2.png" });
+    const g1 = p1.command.generate;
+    try std.testing.expectEqual(@as(usize, 2), g1.images.len);
+    try std.testing.expectEqualStrings("1.png", g1.images[0]);
+    try std.testing.expectEqualStrings("2.png", g1.images[1]);
+
+    const p2 = try parseArgs(a, &.{ "generate", "-m", "m", "-p", "hi", "--images", "a.png, b.png,c.png" });
+    const g2 = p2.command.generate;
+    try std.testing.expectEqual(@as(usize, 3), g2.images.len);
+    try std.testing.expectEqualStrings("a.png", g2.images[0]);
+    try std.testing.expectEqualStrings("b.png", g2.images[1]);
+    try std.testing.expectEqualStrings("c.png", g2.images[2]);
 }

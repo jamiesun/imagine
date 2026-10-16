@@ -121,6 +121,8 @@ pub const BackendKind = enum {
     gemini_video,
     /// Self-hosted LTX-2 service using imagine's documented async video contract.
     ltx2_video,
+    /// Microsoft AI image generation & multi-reference editing (Azure Foundry).
+    mai_image,
 
     pub fn fromString(s: []const u8) ?BackendKind {
         // openai_image is canonical; azure_image is kept as a legacy alias.
@@ -143,6 +145,8 @@ pub const BackendKind = enum {
         if (std.mem.eql(u8, s, "ltx2_video") or std.mem.eql(u8, s, "ltx2-video") or
             std.mem.eql(u8, s, "ltx_video") or std.mem.eql(u8, s, "ltx-2") or
             std.mem.eql(u8, s, "ltx2")) return .ltx2_video;
+        if (std.mem.eql(u8, s, "mai_image") or std.mem.eql(u8, s, "mai-image") or
+            std.mem.eql(u8, s, "mai")) return .mai_image;
         return null;
     }
 
@@ -155,6 +159,7 @@ pub const BackendKind = enum {
             .volcengine_image => "volcengine_image",
             .gemini_video => "gemini_video",
             .ltx2_video => "ltx2_video",
+            .mai_image => "mai_image",
         };
     }
 
@@ -195,17 +200,18 @@ pub const BackendKind = enum {
 
     pub fn inputImageStyle(self: BackendKind) InputImageStyle {
         return switch (self) {
-            .gemini_video, .ltx2_video, .qwen_image => .bytes_base64,
+            .gemini_video, .ltx2_video, .qwen_image, .mai_image => .bytes_base64,
             .seedance, .volcengine_image => .url_or_data_url,
             .openai_image, .azure_flux => .unsupported,
         };
     }
 
     /// Maximum number of `--image` references accepted per generation request.
-    /// Qwen supports up to ten; other image-input backends use a single frame.
+    /// Qwen supports up to ten; MAI up to five; other image-input backends use a single frame.
     pub fn maxInputImages(self: BackendKind) usize {
         return switch (self) {
             .qwen_image => 10,
+            .mai_image => 5,
             .seedance, .volcengine_image, .gemini_video, .ltx2_video => 1,
             .openai_image, .azure_flux => 0,
         };
@@ -294,7 +300,7 @@ pub const GenRequest = struct {
     resolution: ?[]const u8 = null,
     /// Aspect-ratio token such as `16:9`.
     ratio: ?[]const u8 = null,
-    /// Input/reference images. Most backends accept at most one; Qwen accepts ten.
+    /// Input/reference images. Most backends accept at most one; Qwen accepts ten; MAI accepts five.
     images: []const InputImage = &.{},
     /// Provider watermark. Ark defaults it to *on* for images and *off* for
     /// video, so this is only sent when the caller decides.

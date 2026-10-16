@@ -41,6 +41,7 @@ QWEN_PNG = b"QWEN-PNG-BYTES"
 OMNI_MP4 = b"GEMINI-OMNI-MP4-BYTES"
 LTX_MP4 = b"LTX2-MP4-BYTES"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+PNG_B64 = base64.b64encode(PNG_MAGIC).decode()
 
 LOG = None
 POLLS = {}
@@ -70,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
                 "authorization": self.headers.get("Authorization"),
                 "goog_api_key": self.headers.get("x-goog-api-key"),
                 "content_type": self.headers.get("Content-Type"),
-                "body": body.decode() if body else None,
+                "body": body.decode("utf-8", errors="replace") if body else None,
             }) + "\n")
 
     def send(self, code, payload, ctype="application/json"):
@@ -88,6 +89,11 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n)
         self.record(body)
+        if self.path in ("/mai/v1/images/generations", "/mai/v1/images/edits"):
+            return self.send(200, {
+                "created": 1,
+                "data": [{"b64_json": PNG_B64}],
+            })
         if self.path == "/api/v3/contents/generations/tasks":
             return self.send(200, {"id": "cgt-mock-1"})
         if self.path == "/fail/contents/generations/tasks":

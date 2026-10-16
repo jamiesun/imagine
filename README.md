@@ -28,13 +28,12 @@ scheduling. Single static Zig binary — no `curl`/`jq`/`base64` dependencies.
 - **Concurrent scheduling** — multiple endpoints per model are load-balanced.
 - **Agent-friendly** — `--json` machine output, `--dry-run`, meaningful exit codes.
 
-Also supports Azure FLUX via `azure_flux` (width/height body). Starter config
-ships example model entries you can edit freely.
+Also supports Azure FLUX via `azure_flux` (width/height body), and Azure AI Foundry MAI models via `mai_image` (supporting both text-to-image and image editing / multi-reference composition up to 5 images). Starter config ships example model entries you can edit freely.
 
 Two optional local backends drive **self-hosted models** with the same unified
 parameters — no credential, no weights, no model code in the binary:
 
-- `qwen_image` — a local Qwen-Image-2.1 server (diffusers or vLLM-Omni):
+- `qwen_image` — a local Qwen-Image-2.1 server (diffusers or vLLM-Omni), supporting text-to-image and single/multi-reference images:
   [`integrations/qwen-image`](integrations/qwen-image/README.md).
 - `ltx2_video` — a local LTX-2 video service (text-to-video and image-to-video),
   with a documented wire contract and a dependency-free reference server:
@@ -141,7 +140,8 @@ imagine version | help
 | `--quality <q>` | `low` / `medium` / `high` / `auto` (`openai_image`) |
 | `--seed <int>` | Seed (where supported) |
 | `--steps <n>` | Denoising steps for `qwen_image` (`num_inference_steps`) |
-| `--image <path\|url>` | Input/reference image; Qwen accepts up to 10 (repeat the flag), other backends at most one |
+| `--image <path\|url>` | Input/reference image; repeat flag for multi-ref (Qwen up to 10, MAI up to 5; others at most one) |
+| `--images <p1,p2...>` | Comma-separated list of reference images (MAI up to 5, Qwen up to 10) |
 | `--watermark` / `--no-watermark` | Force the provider watermark on/off (Ark) |
 | `--duration <sec>` | Clip length in seconds (video) |
 | `--resolution <r>` | `480p` / `720p` / `1080p` / `4k` (video) |
@@ -464,7 +464,7 @@ task_timeout = 600  # video: give up on one task after N seconds
 
 # Table key = logical name for -m; rename freely.
 [models."my-image"]
-backend = "openai_image" # openai_image | azure_flux  (azure_image = legacy alias)
+backend = "openai_image" # openai_image | mai_image | azure_flux | qwen_image (azure_image = legacy alias)
 api_model = "deployment-or-model-id"
 
 [[models."my-image".endpoints]]

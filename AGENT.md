@@ -47,6 +47,7 @@
 | `http.zig` | `std.http.Client` 薄封装：`post`/`get` → `Response{status,body}` | 不懂任何模型语义 |
 | `backends/openai_image.zig` | OpenAI-compatible `/v1/images/generations` 请求体（`size` 字符串） | 只构造 body，不发请求 |
 | `backends/azure_flux.zig` | Azure FLUX 请求体（`width`/`height`，可选 `seed`） | 同上 |
+| `backends/mai_image.zig` | Azure AI Foundry MAI 图像生成与编辑请求体（T2I JSON vs I2I multipart/form-data，支持多达 5 张参考图，动态切换端点 URL） | 同上 |
 | `backends/qwen_image.zig` | Qwen-Image 请求体（`size` 像素串或原生比例 token、`steps`、`seed`、单张 `image` 或多张 `images[]` 参考图），调本地/自托管 server | 同上 |
 | `backends/volcengine_image.zig` | 火山方舟 Seedream 请求体（`size` 档位或像素、`watermark`、`image` 参考图；无 `n`/`seed`） | 同上 |
 | `backends/seedance.zig` | 火山方舟 Seedance 建任务体 + `parseCreate`/`pollUrl`/`parsePoll`（`content[]`、`status` 终态判定） | 不发起请求、不下载 |
@@ -91,7 +92,7 @@ task_timeout = 600 # 单个异步任务的等待上限秒数
 
 # 表键即 -m 的逻辑名，可自由增删改；逻辑名不写死在二进制里。
 [models."<model-name>"]
-backend = "openai_image" # openai_image | azure_flux | qwen_image
+backend = "openai_image" # openai_image | mai_image | azure_flux | qwen_image
                          # | volcengine_image | seedance | gemini_video
                          # | ltx2_video（azure_image 为兼容别名）
 api_model = "传给 API 的真实 model 字段"

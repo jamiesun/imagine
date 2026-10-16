@@ -113,6 +113,13 @@ api_key = "ark-test-key"
 [models."seedream".defaults]
 size = "2K"
 
+[models."mai"]
+backend = "mai_image"
+api_model = "MAI-Image-2.6"
+[[models."mai".endpoints]]
+base_url = "$base/mai/v1/images/generations"
+api_key = "mai-test-key"
+
 [models."qwen"]
 backend = "qwen_image"
 api_model = "Qwen/Qwen-Image-2.1"
@@ -491,6 +498,40 @@ set -e
 check "exit code" 1 "$(rc $rc_ltx_fail)"
 check "provider message passed through" True \
     "$(field "$work/r.json" "'out of memory' in d['errors'][0] and 'ltx-fail' in d['errors'][0]")"
+
+echo "--- mai_image: text-to-image (generations)"
+"$bin" generate -m mai -p "a cat" -o "$work/out/mai-t2i.png" \
+    --config "$work/config.toml" --authorize-spend --json > "$work/r.json"; rc_mai_t2i=$?
+check "exit code" 0 "$(rc $rc_mai_t2i)"
+check "downloaded bytes" 40 "$(wc -c < "$work/out/mai-t2i.png" | tr -d ' ')"
+check "generations endpoint called" True "$(python3 -c "
+import json
+for line in open('$work/requests.log'):
+    r = json.loads(line)
+    if r['path'] == '/mai/v1/images/generations':
+        print(True); break
+else:
+    print(False)
+")"
+
+echo "--- mai_image: image edit (edits, multipart/form-data)"
+"$bin" generate -m mai -p "turn cat to robot" --image "$work/first.png" -o "$work/out/mai-edit.png" \
+    --config "$work/config.toml" --authorize-spend --json > "$work/r.json"; rc_mai_edit=$?
+check "exit code" 0 "$(rc $rc_mai_edit)"
+check "edits endpoint called with multipart" True "$(python3 -c "
+import json
+for line in open('$work/requests.log'):
+    r = json.loads(line)
+    if r['path'] == '/mai/v1/images/edits':
+        print('multipart/form-data; boundary=' in (r['content_type'] or '')); break
+else:
+    print(False)
+")"
+
+echo "--- mai_image: multi-reference images via --images"
+"$bin" generate -m mai -p "blend cats" --images "$work/first.png,$work/first.png" -o "$work/out/mai-multi.png" \
+    --config "$work/config.toml" --authorize-spend --json > "$work/r.json"; rc_mai_multi=$?
+check "exit code" 0 "$(rc $rc_mai_multi)"
 
 echo "--- spend boundary: a paid task needs explicit authorization"
 before=$(wc -l < "$work/requests.log")
