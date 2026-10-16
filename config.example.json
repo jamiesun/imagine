@@ -3,7 +3,7 @@
   "concurrency": 0,
   "models": {
     "MAI-Image-2.6": {
-      "backend": "openai_image",
+      "backend": "mai_image",
       "api_model": "MAI-Image-2.6",
       "endpoints": [
         {
@@ -25,7 +25,7 @@
       }
     },
     "MAI-Image-2.5": {
-      "backend": "openai_image",
+      "backend": "mai_image",
       "api_model": "MAI-Image-2.5",
       "endpoints": [
         {
@@ -42,7 +42,7 @@
       }
     },
     "MAI-Image-2.6-Flash": {
-      "backend": "openai_image",
+      "backend": "mai_image",
       "api_model": "MAI-Image-2.6-Flash",
       "endpoints": [
         {

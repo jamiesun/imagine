@@ -20,6 +20,7 @@ const seedance = @import("backends/seedance.zig");
 const volcengine_image = @import("backends/volcengine_image.zig");
 const gemini_video = @import("backends/gemini_video.zig");
 const ltx2_video = @import("backends/ltx2_video.zig");
+const mai_image = @import("backends/mai_image.zig");
 
 const user_agent = "imagine/" ++ @import("version.zig").string;
 
@@ -44,6 +45,15 @@ pub fn outputExt(kind: types.BackendKind, format: ?[]const u8) []const u8 {
     };
 }
 
+/// Target URL for a generation request. Some backends route to different
+/// endpoints depending on parameters (e.g. `mai_image` edits vs generations).
+pub fn targetUrl(kind: types.BackendKind, allocator: std.mem.Allocator, base_url: []const u8, req: types.GenRequest) ![]const u8 {
+    return switch (kind) {
+        .mai_image => mai_image.resolveUrl(allocator, base_url, req),
+        else => base_url,
+    };
+}
+
 /// Construct the provider request body for a model's backend. For async-task
 /// backends this is the *create* request body (what `--dry-run` prints).
 pub fn buildBody(kind: types.BackendKind, allocator: std.mem.Allocator, req: types.GenRequest) ![]u8 {
@@ -55,6 +65,7 @@ pub fn buildBody(kind: types.BackendKind, allocator: std.mem.Allocator, req: typ
         .volcengine_image => volcengine_image.buildBody(allocator, req),
         .gemini_video => gemini_video.buildBody(allocator, req),
         .ltx2_video => ltx2_video.buildBody(allocator, req),
+        .mai_image => mai_image.buildBody(allocator, req),
     };
 }
 
@@ -102,7 +113,7 @@ fn asyncImpl(kind: types.BackendKind) ?Async {
             .poll_url = ltx2_video.pollUrl,
             .parse_poll = ltx2_video.parsePoll,
         },
-        .openai_image, .azure_flux, .qwen_image, .volcengine_image => null,
+        .openai_image, .azure_flux, .qwen_image, .volcengine_image, .mai_image => null,
     };
 }
 
@@ -204,10 +215,15 @@ pub fn generate(
             "backend {s} needs the --image input as bytes; re-run with a local file or a fetchable URL",
             .{model.backend.toString()},
         ) },
+        error.TooManyReferenceImages => return .{ .err = try std.fmt.allocPrint(
+            allocator,
+            "backend {s} supports at most 5 reference images",
+            .{model.backend.toString()},
+        ) },
     };
 
     return switch (model.backend.flow()) {
-        .sync => generateSync(client, allocator, model.backend, endpoint, &auth, body),
+        .sync => generateSync(client, allocator, model.backend, endpoint, &auth, body, req),
         .async_task => generateAsync(client, allocator, model.backend, endpoint, &auth, body, opts),
     };
 }
@@ -219,8 +235,20 @@ fn generateSync(
     endpoint: *const types.Endpoint,
     auth: *const Auth,
     body: []const u8,
+    req: types.GenRequest,
 ) std.mem.Allocator.Error!GenResult {
-    const res = http.post(client, allocator, endpoint.base_url, auth.std, auth.extra(), body) catch |e| {
+    const url = targetUrl(kind, allocator, endpoint.base_url, req) catch |e| {
+        return .{ .err = try std.fmt.allocPrint(allocator, "cannot resolve URL for {s}: {s}", .{ kind.toString(), @errorName(e) }) };
+    };
+
+    var auth_std = auth.std;
+    if (kind == .mai_image and mai_image.isEdit(req)) {
+        if (mai_image.contentType(allocator, req) catch null) |ct| {
+            auth_std.content_type = .{ .override = ct };
+        }
+    }
+
+    const res = http.post(client, allocator, url, auth_std, auth.extra(), body) catch |e| {
         return .{ .err = try std.fmt.allocPrint(allocator, "request failed: {s}", .{@errorName(e)}) };
     };
 

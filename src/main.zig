@@ -589,7 +589,7 @@ fn cmdGenerate(ctx: Ctx, g: cli.Generate) !u8 {
 fn reportUnsupportedImage(ctx: Ctx, kind: types.BackendKind) !u8 {
     try printErr(ctx.io, try std.fmt.allocPrint(
         ctx.arena,
-        "backend {s} takes no --image input (supported by: qwen_image up to 10, seedance, gemini_video, volcengine_image, ltx2_video)\n",
+        "backend {s} takes no --image input (supported by: qwen_image up to 10, mai_image up to 5, seedance, gemini_video, volcengine_image, ltx2_video)\n",
         .{kind.toString()},
     ));
     return 2;
@@ -629,15 +629,26 @@ fn dryRunBody(ctx: Ctx, model: *const types.ModelConfig, req: types.GenRequest) 
             try printErr(ctx.io, "this backend needs the --image bytes inline, but --dry-run makes no network call; pass a local file, or drop --dry-run to fetch the URL\n");
             return error.DryRunBodyUnavailable;
         },
+        error.TooManyReferenceImages => {
+            try printErr(ctx.io, "this backend supports at most 5 reference images\n");
+            return error.DryRunBodyUnavailable;
+        },
     };
+    if (model.backend == .mai_image) {
+        const mai_image = @import("backends/mai_image.zig");
+        if (mai_image.isEdit(req)) {
+            return mai_image.cleanDryRunBody(ctx.arena, body);
+        }
+    }
     var redacted = body;
     for (req.images) |img| {
         const bytes = img.bytes orelse continue;
         if (bytes.len == 0) continue;
         const b64 = try util.base64EncodeAlloc(ctx.arena, bytes);
-        const at = std.mem.indexOf(u8, redacted, b64) orelse continue;
-        const note = try std.fmt.allocPrint(ctx.arena, "<{d} bytes of base64 elided>", .{b64.len});
-        redacted = try std.fmt.allocPrint(ctx.arena, "{s}{s}{s}", .{ redacted[0..at], note, redacted[at + b64.len ..] });
+        while (std.mem.indexOf(u8, redacted, b64)) |at| {
+            const note = try std.fmt.allocPrint(ctx.arena, "<{d} bytes of base64 elided>", .{b64.len});
+            redacted = try std.fmt.allocPrint(ctx.arena, "{s}{s}{s}", .{ redacted[0..at], note, redacted[at + b64.len ..] });
+        }
     }
     return redacted;
 }
@@ -686,6 +697,7 @@ fn dryRun(
 ) !u8 {
     const body = try dryRunBody(ctx, model, req);
     const ep = &model.endpoints[0];
+    const target = backend.targetUrl(model.backend, ctx.arena, ep.base_url, req) catch ep.base_url;
     const media = model.backend.media();
     try outf(ctx,
         \\dry run (no API call)
@@ -699,7 +711,7 @@ fn dryRun(
         \\  request body (n=1 per call):
         \\{s}
         \\
-    , .{ model.name, model.backend.toString(), media.toString(), ep.base_url, n, body });
+    , .{ model.name, model.backend.toString(), media.toString(), target, n, body });
     if (model.backend.flow() == .async_task) {
         try outf(ctx,
             \\  async: this backend creates a provider task and polls it

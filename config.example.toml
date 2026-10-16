@@ -14,7 +14,7 @@ poll_interval = 5
 task_timeout = 600
 
 [models."MAI-Image-2.6"]
-backend = "openai_image"
+backend = "mai_image"
 api_model = "MAI-Image-2.6"
 
 [[models."MAI-Image-2.6".endpoints]]
@@ -35,7 +35,7 @@ output_compression = 100
 quality = "high"
 
 [models."MAI-Image-2.5"]
-backend = "openai_image"
+backend = "mai_image"
 api_model = "MAI-Image-2.5"
 
 [[models."MAI-Image-2.5".endpoints]]
@@ -50,7 +50,7 @@ output_compression = 100
 quality = "high"
 
 [models."MAI-Image-2.6-Flash"]
-backend = "openai_image"
+backend = "mai_image"
 api_model = "MAI-Image-2.6-Flash"
 
 [[models."MAI-Image-2.6-Flash".endpoints]]
