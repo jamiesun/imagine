@@ -129,6 +129,80 @@ auth = "none"
 [models."qwen".defaults]
 size = "1024x1024"
 steps = 10
+
+[models."wan-image"]
+backend = "dashscope_image"
+api_model = "wan2.7-image-pro"
+[[models."wan-image".endpoints]]
+base_url = "$base/dashscope/api/v1/services/aigc/multimodal-generation/generation"
+api_key = "dash-key"
+
+[models."wan-video"]
+backend = "dashscope_video"
+api_model = "wan2.7-t2v"
+[[models."wan-video".endpoints]]
+base_url = "$base/dashscope/api/v1/services/aigc/video-generation/video-synthesis"
+api_key = "dash-key"
+
+[models."vidu"]
+backend = "vidu_video"
+api_model = "viduq2"
+[[models."vidu".endpoints]]
+base_url = "$base/ent/v2"
+api_key = "vidu-key"
+auth = "token"
+
+[models."kling"]
+backend = "kling_video"
+api_model = "kling-v1"
+[[models."kling".endpoints]]
+base_url = "$base/kling"
+api_key = "access-key"
+api_secret = "secret-key"
+auth = "jwt_hs256"
+
+[models."minimax"]
+backend = "minimax_video"
+api_model = "MiniMax-Hailuo"
+[[models."minimax".endpoints]]
+base_url = "$base/minimax/v1/video_generation"
+api_key = "mm-key"
+
+[models."silicon"]
+backend = "siliconflow_image"
+api_model = "black-forest-labs/FLUX.1-schnell"
+[[models."silicon".endpoints]]
+base_url = "$base/silicon/v1/images/generations"
+api_key = "sf-key"
+
+[models."tts"]
+backend = "tts_http"
+api_model = "qwen3-tts"
+[[models."tts".endpoints]]
+base_url = "$base/tts/generate"
+auth = "none"
+
+[models."tts-stream"]
+backend = "tts_http"
+api_model = "qwen3-tts"
+[[models."tts-stream".endpoints]]
+base_url = "$base/tts-stream/generate"
+auth = "none"
+
+[models."gtts"]
+backend = "google_cloud_tts"
+api_model = "texttospeech"
+[[models."gtts".endpoints]]
+base_url = "$base/cloud/v1/text:synthesize"
+api_key = "cloud-token"
+
+[models."gemtts"]
+backend = "gemini_tts"
+api_model = "gemini-3.8-flash-tts"
+[[models."gemtts".endpoints]]
+base_url = "$base/gemini-tts/v1beta/interactions"
+api_key = "goog-tts"
+auth = "google_api_key"
 TOML
 
 mkdir -p "$work/out"
@@ -583,6 +657,145 @@ d = json.load(sys.stdin)
 ark = [m for m in d if m['backend'] == 'seedance']
 print(bool(ark) and all(m['credential_status'] == 'configured' and m['availability'] == 'unknown' for m in ark))
 ")"
+
+echo "--- china video and image providers"
+"$bin" generate -m wan-image -p "a fox" -o "$work/out/wan.png" \
+    --authorize-spend --config "$work/config.toml" --json > "$work/r.json"; rc_wan=$?
+check "wan image exit" 0 "$(rc $rc_wan)"
+check "wan image bytes" "WAN-PNG-BYTES" "$(cat "$work/out/wan.png")"
+check "wan image is not async" True \
+    "$(python3 -c "
+import json
+ok=False
+for line in open('$work/requests.log'):
+    r=json.loads(line)
+    if r['path'].endswith('multimodal-generation/generation'):
+        ok=r.get('dash_async') is None
+        break
+print(ok)
+")"
+
+"$bin" generate -m wan-video -p "a fox running" --duration 5 --resolution 720p -o "$work/out/wan.mp4" \
+    --poll-interval 1 --authorize-spend --config "$work/config.toml" --json > "$work/r.json"; rc_wanv=$?
+check "wan video exit" 0 "$(rc $rc_wanv)"
+check "wan video bytes" "WAN-MP4-BYTES" "$(cat "$work/out/wan.mp4")"
+check "wan video sends the async header" enable \
+    "$(python3 -c "
+import json
+for line in open('$work/requests.log'):
+    r=json.loads(line)
+    if 'video-synthesis' in r['path']:
+        print(r.get('dash_async') or ''); break
+")"
+
+"$bin" generate -m vidu -p "a fox" --duration 4 -o "$work/out/vidu.mp4" \
+    --poll-interval 1 --authorize-spend --config "$work/config.toml" --json > "$work/r.json"; rc_vidu=$?
+check "vidu exit" 0 "$(rc $rc_vidu)"
+check "vidu bytes" "VIDU-MP4-BYTES" "$(cat "$work/out/vidu.mp4")"
+check "vidu uses Token auth" True \
+    "$(python3 -c "
+import json
+for line in open('$work/requests.log'):
+    r=json.loads(line)
+    if r['path']=='/ent/v2/text2video':
+        print((r.get('authorization') or '').startswith('Token ')); break
+else:
+    print(False)
+")"
+
+set +e
+"$bin" generate -m vidu -p "x" --last-frame "$work/first.png" -o "$work/out/vidu-bad.mp4" \
+    --config "$work/config.toml" > "$work/vidu-bad.txt" 2>&1
+rc_vidu_bad=$?
+set -e
+check "last frame without a first is a usage error" 2 "$rc_vidu_bad"
+check "no vidu request for the usage error" False \
+    "$(grep -q 'vidu-bad' "$work/requests.log" && echo True || echo False)"
+
+"$bin" generate -m kling -p "a fox" --duration 5 -o "$work/out/kling.mp4" \
+    --poll-interval 1 --authorize-spend --config "$work/config.toml" --json > "$work/r.json"; rc_kling=$?
+check "kling exit" 0 "$(rc $rc_kling)"
+check "kling bytes" "KLING-MP4-BYTES" "$(cat "$work/out/kling.mp4")"
+check "kling authorization is a three-part jwt" True \
+    "$(python3 -c "
+import json
+for line in open('$work/requests.log'):
+    r=json.loads(line)
+    if r['path']=='/kling/v1/videos/text2video':
+        token=(r.get('authorization') or '').removeprefix('Bearer ').strip()
+        print(token.count('.')==2 and '=' not in token)
+        break
+else:
+    print(False)
+")"
+
+"$bin" generate -m minimax -p "a fox" --resolution 1080p -o "$work/out/mm.mp4" \
+    --poll-interval 1 --authorize-spend --config "$work/config.toml" --json > "$work/r.json"; rc_mm=$?
+check "minimax exit" 0 "$(rc $rc_mm)"
+check "minimax bytes" "MINIMAX-MP4-BYTES" "$(cat "$work/out/mm.mp4")"
+check "minimax cdn download has no api credential" True \
+    "$(python3 -c "
+import json
+for line in open('$work/requests.log'):
+    r=json.loads(line)
+    if r['path']=='/cdn/minimax.mp4':
+        print(not r.get('authorization') and not r.get('goog_api_key'))
+        break
+else:
+    print(False)
+")"
+
+"$bin" generate -m silicon -p "a fox" -o "$work/out/sf.png" \
+    --authorize-spend --config "$work/config.toml" --json > "$work/r.json"; rc_sf=$?
+check "siliconflow exit" 0 "$(rc $rc_sf)"
+check "siliconflow bytes" "SILICONFLOW-PNG-BYTES" "$(cat "$work/out/sf.png")"
+
+echo "--- audio"
+"$bin" generate -m tts -p "hello" -o "$work/out/tts.wav" \
+    --config "$work/config.toml" --json > "$work/r.json"; rc_tts=$?
+check "tts exit" 0 "$(rc $rc_tts)"
+check "tts json uses audios" True "$(field "$work/r.json" "len(d['audios'])==1 and d['images']==[] and d['videos']==[]")"
+check "tts wav header" "RIFF" "$(dd if="$work/out/tts.wav" bs=4 count=1 2>/dev/null)"
+
+set +e
+"$bin" generate -m tts -p "hello" --stream -o "$work/out/tts-no.wav" \
+    --config "$work/config.toml" > "$work/tts-stream-no.txt" 2>&1
+rc_tts_no=$?
+set -e
+check "strict stream is rejected when the server is not incremental" 2 "$rc_tts_no"
+
+"$bin" generate -m tts-stream -p "hello" --stream -o "$work/out/tts-stream.wav" \
+    --config "$work/config.toml" --json > "$work/r.json"; rc_tts_s=$?
+check "incremental tts exit" 0 "$(rc $rc_tts_s)"
+check "incremental tts is one wav" "RIFF" "$(dd if="$work/out/tts-stream.wav" bs=4 count=1 2>/dev/null)"
+check "stream_applied" True "$(field "$work/r.json" "d['audios'][0]['stream_applied'] is True")"
+
+"$bin" voices -m tts --config "$work/config.toml" > "$work/voices.txt"
+check "voices list" True "$(grep -q default "$work/voices.txt" && echo True || echo False)"
+
+"$bin" generate -m gtts -p "hello" --voice en-US-Chirp3-HD-Charon -o "$work/out/gtts.wav" \
+    --authorize-spend --config "$work/config.toml" --json > "$work/r.json"; rc_g=$?
+check "google tts exit" 0 "$(rc $rc_g)"
+check "google tts wav" "RIFF" "$(dd if="$work/out/gtts.wav" bs=4 count=1 2>/dev/null)"
+
+printf '<speak>Hi <mark name="m1"/></speak>' > "$work/ssml.xml"
+"$bin" generate -m gtts --ssml-file "$work/ssml.xml" --voice en-US-Chirp3-HD-Charon -o "$work/out/ssml.wav" \
+    --authorize-spend --config "$work/config.toml" --json > "$work/r.json"; rc_ssml=$?
+check "ssml exit" 0 "$(rc $rc_ssml)"
+check "ssml uses v1beta1" True \
+    "$(python3 -c "
+import json
+print(any(json.loads(line)['path']=='/cloud/v1beta1/text:synthesize' for line in open('$work/requests.log')))
+")"
+check "ssml alignment sidecar" True "$([ -f "$work/out/ssml.wav.alignment.json" ] && echo True || echo False)"
+
+"$bin" generate -m gemtts -p "hello" --voice Kore -o "$work/out/gem.wav" \
+    --authorize-spend --config "$work/config.toml" --json > "$work/r.json"; rc_gem=$?
+check "gemini tts exit" 0 "$(rc $rc_gem)"
+check "gemini tts wav" "RIFF" "$(dd if="$work/out/gem.wav" bs=4 count=1 2>/dev/null)"
+
+"$bin" voices -m gtts --authorize-spend --config "$work/config.toml" > "$work/gvoices.txt"
+check "google voices" True "$(grep -q Charon "$work/gvoices.txt" && echo True || echo False)"
 
 echo
 echo "e2e: $pass passed, $fail failed"

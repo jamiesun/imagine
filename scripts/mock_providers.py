@@ -31,6 +31,7 @@ GET  /cdn/*                                        -> asset bytes (no auth neede
 
 import base64
 import json
+import struct
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -42,6 +43,32 @@ OMNI_MP4 = b"GEMINI-OMNI-MP4-BYTES"
 LTX_MP4 = b"LTX2-MP4-BYTES"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 PNG_B64 = base64.b64encode(PNG_MAGIC).decode()
+WAN_MP4 = b"WAN-MP4-BYTES"
+VIDU_MP4 = b"VIDU-MP4-BYTES"
+KLING_MP4 = b"KLING-MP4-BYTES"
+MINIMAX_MP4 = b"MINIMAX-MP4-BYTES"
+SF_PNG = b"SILICONFLOW-PNG-BYTES"
+
+
+def tiny_wav():
+    pcm = b"\x00\x00\x01\x00"
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + len(pcm), b"WAVE",
+        b"fmt ", 16, 1, 1, 8000, 16000, 2, 16,
+        b"data", len(pcm),
+    )
+    return header + pcm
+
+
+WAV = tiny_wav()
+WAV_B64 = base64.b64encode(WAV).decode()
+STREAM = (
+    b'{"event":"meta","codec":"pcm_s16le","sample_rate_hz":8000,"channels":1}\n'
+    b'{"event":"audio_chunk","data":"AAA="}\n'
+    b'{"event":"audio_chunk","data":"AQA="}\n'
+    b'{"event":"complete"}\n'
+)
 
 LOG = None
 POLLS = {}
@@ -69,6 +96,7 @@ class Handler(BaseHTTPRequestHandler):
                 "method": self.command,
                 "path": self.path,
                 "authorization": self.headers.get("Authorization"),
+                "dash_async": self.headers.get("X-DashScope-Async"),
                 "goog_api_key": self.headers.get("x-goog-api-key"),
                 "content_type": self.headers.get("Content-Type"),
                 "body": body.decode("utf-8", errors="replace") if body else None,
@@ -117,6 +145,27 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/array-error/interactions":
             # Google wraps some errors in a one-element array.
             return self.send(400, [{"error": {"code": 400, "message": "API key not valid."}}])
+        if self.path == "/dashscope/api/v1/services/aigc/multimodal-generation/generation":
+            return self.send(200, {"output": {"choices": [{"message": {"content": [{"image": f"http://{self.host()}/cdn/wan.png", "type": "image"}]}}]}})
+        if self.path == "/dashscope/api/v1/services/aigc/video-generation/video-synthesis":
+            return self.send(200, {"output": {"task_id": "wan-1", "task_status": "PENDING"}})
+        if self.path == "/ent/v2/text2video":
+            return self.send(200, {"task_id": "vidu-1", "state": "created"})
+        if self.path == "/kling/v1/videos/text2video":
+            return self.send(200, {"code": 0, "data": {"task_id": "kling-1", "task_status": "submitted"}})
+        if self.path == "/minimax/v1/video_generation":
+            return self.send(200, {"task_id": "mm-1", "base_resp": {"status_code": 0}})
+        if self.path == "/silicon/v1/images/generations":
+            return self.send(200, {"images": [{"url": f"http://{self.host()}/cdn/silicon.png"}]})
+        if self.path in ("/tts/generate", "/tts-stream/generate"):
+            raw = body.decode("utf-8", errors="replace")
+            if '"stream":true' in raw.replace(" ", ""):
+                return self.send(200, STREAM, "application/x-ndjson")
+            return self.send(200, {"audio": WAV_B64, "mime": "audio/wav", "sample_rate_hz": 8000, "channels": 1})
+        if self.path == "/cloud/v1/text:synthesize" or self.path == "/cloud/v1beta1/text:synthesize":
+            return self.send(200, {"audioContent": "AAA=", "timepoints": [{"markName": "m1", "timeSeconds": 0.2}]})
+        if self.path == "/gemini-tts/v1beta/interactions":
+            return self.send(200, {"steps": [{"type": "model_output", "content": [{"type": "audio", "mime_type": "audio/l16;rate=8000", "data": "AAA="}]}]})
         if self.path == "/v1beta/interactions":
             return self.send(200, {
                 "id": "v1_mock", "object": "interaction", "status": "completed",
@@ -170,6 +219,36 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, SEEDANCE_MP4, "video/mp4")
         if self.path == "/cdn/seedream.png":
             return self.send(200, SEEDREAM_PNG, "image/png")
+        if self.path == "/api/v1/tasks/wan-1":
+            return self.send(200, {"output": {"task_id": "wan-1", "task_status": "SUCCEEDED", "video_url": f"http://{self.host()}/cdn/wan.mp4"}})
+        if self.path == "/ent/v2/tasks/vidu-1/creations":
+            return self.send(200, {"id": "vidu-1", "state": "success", "creations": [{"url": f"http://{self.host()}/cdn/vidu.mp4"}]})
+        if self.path == "/kling/v1/videos/text2video/kling-1":
+            return self.send(200, {"code": 0, "data": {"task_status": "succeed", "task_result": {"videos": [{"url": f"http://{self.host()}/cdn/kling.mp4"}]}}})
+        if self.path.startswith("/v1/query/video_generation"):
+            return self.send(200, {"task_id": "mm-1", "status": "Success", "file_id": "file-9", "base_resp": {"status_code": 0}})
+        if self.path.startswith("/v1/files/retrieve"):
+            return self.send(200, {"file": {"download_url": f"http://{self.host()}/cdn/minimax.mp4"}})
+        if self.path == "/tts/capabilities":
+            return self.send(200, {"protocol": "imagine.tts_http.v1", "modes": ["speech", "voice_clone"], "streaming": False, "formats": ["wav"]})
+        if self.path == "/tts-stream/capabilities":
+            return self.send(200, {"protocol": "imagine.tts_http.v1", "modes": ["speech"], "streaming": True, "formats": ["wav"]})
+        if self.path in ("/tts/voices", "/tts-stream/voices"):
+            return self.send(200, {"voices": ["default", "clone"]})
+        if self.path == "/cloud/v1/voices":
+            return self.send(200, {"voices": [{"name": "en-US-Chirp3-HD-Charon"}]})
+        if self.path == "/cdn/wan.mp4":
+            return self.send(200, WAN_MP4, "video/mp4")
+        if self.path == "/cdn/wan.png":
+            return self.send(200, b"WAN-PNG-BYTES", "image/png")
+        if self.path == "/cdn/vidu.mp4":
+            return self.send(200, VIDU_MP4, "video/mp4")
+        if self.path == "/cdn/kling.mp4":
+            return self.send(200, KLING_MP4, "video/mp4")
+        if self.path == "/cdn/minimax.mp4":
+            return self.send(200, MINIMAX_MP4, "video/mp4")
+        if self.path == "/cdn/silicon.png":
+            return self.send(200, SF_PNG, "image/png")
         if self.path in ("/cdn/first-frame", "/cdn/qwen-reference"):
             # A real image with no filename extension, so the client has to
             # sniff the type from the bytes.

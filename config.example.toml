@@ -137,6 +137,52 @@ quality = "high"
 # base_url = "http://127.0.0.1:8000/v1/images/generations"
 # auth = "none"
 #
+# --- Optional providers (commented: URLs are account-specific; no presets) ----
+# DashScope Wan image is synchronous on multimodal-generation (no async header).
+# Wan video and image-generation send X-DashScope-Async because the URL says so.
+# [models."wan-image"]
+# backend = "dashscope_image"
+# api_model = "wan2.7-image-pro"
+# [[models."wan-image".endpoints]]
+# base_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+# api_key_env = "DASHSCOPE_API_KEY"
+#
+# Vidu: auth = "token"  (Authorization: Token, not Bearer).
+# --ref-image and first/last frames are different endpoints; do not mix them.
+# Kling v1: auth = "jwt_hs256" with api_key_env = "KLING_ACCESS_KEY"
+# and api_secret_env = "KLING_SECRET_KEY". imagine does not sign RS256
+# service-account JWTs. A short-lived bearer also works (auth = "bearer").
+# MiniMax video downloads file.download_url without the API key.
+# SiliconFlow image accepts at most one reference.
+#
+# Speech (media = audio). --json adds audios[] and leaves images[] / videos[] empty.
+# [models."qwen3-tts"]
+# backend = "tts_http"
+# api_model = "qwen3-tts"
+# [[models."qwen3-tts".endpoints]]
+# base_url = "http://127.0.0.1:8712/generate"
+# auth = "none"
+# See integrations/qwen3-tts/README.md. Official Qwen non_streaming_mode is not
+# incremental audio; the server reports streaming false unless it yields chunks.
+#
+# [models."google-cloud-tts"]
+# backend = "google_cloud_tts"
+# api_model = "texttospeech"
+# [[models."google-cloud-tts".endpoints]]
+# base_url = "https://texttospeech.googleapis.com/v1/text:synthesize"
+# api_key_env = "GOOGLE_CLOUD_TTS_TOKEN"
+# auth = "bearer"
+# Or auth = "google_metadata" on GCE (no static key; the token is fetched at call time).
+# A Gemini API key is not a Cloud TTS credential.
+#
+# [models."gemini-tts"]
+# backend = "gemini_tts"
+# api_model = "gemini-3.8-flash-tts"
+# [[models."gemini-tts".endpoints]]
+# base_url = "https://generativelanguage.googleapis.com/v1beta/interactions"
+# api_key_env = "GEMINI_API_KEY"
+# auth = "google_api_key"
+#
 # [models."qwen-image-2.1".defaults]
 # size = "1024x1024"    # or a native 2K ratio token: 16:9 4:3 3:2 2:3 1:1 ...
 # steps = 20            # = num_inference_steps

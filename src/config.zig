@@ -35,6 +35,8 @@ pub const env_backend = "IMAGINE_BACKEND";
 pub const env_auth = "IMAGINE_AUTH";
 pub const env_api_key = "IMAGINE_API_KEY";
 pub const env_api_key_env = "IMAGINE_API_KEY_ENV";
+pub const env_api_secret = "IMAGINE_API_SECRET";
+pub const env_api_secret_env = "IMAGINE_API_SECRET_ENV";
 pub const env_default_api_key_env = "AZURE_OPENAI_APIKEY";
 pub const env_output_dir = "IMAGINE_OUTPUT_DIR";
 pub const env_concurrency = "IMAGINE_CONCURRENCY";
@@ -246,9 +248,18 @@ fn ephemeralAuth(env: Env) ?types.AuthScheme {
 /// so an ephemeral config pointing at one is complete without a key.
 pub fn ephemeralNeedsCredential(env: Env) bool {
     if (ephemeralAuth(env)) |a| {
-        if (a == types.AuthScheme.none) return false;
+        if (!a.needsStaticKey()) return false;
     }
     return true;
+}
+
+/// Second credential for `jwt_hs256` (Kling access-key signing). Unused for
+/// schemes that only have one secret.
+pub fn ephemeralSecretEnv(env: Env) []const u8 {
+    if (envNonEmpty(env, env_api_secret_env)) |name| return name;
+    const backend_str = envNonEmpty(env, env_backend) orelse return "KLING_SECRET_KEY";
+    const backend = types.BackendKind.fromString(backend_str) orelse return "KLING_SECRET_KEY";
+    return backend.defaultSecretEnv() orelse "KLING_SECRET_KEY";
 }
 
 /// Credential env var used when `IMAGINE_API_KEY_ENV` names none: the selected
@@ -272,6 +283,10 @@ pub fn ephemeralMissing(env: Env) EphemeralMissing {
     const has_literal = envNonEmpty(env, env_api_key) != null;
     const has_from_env = envNonEmpty(env, ephemeralKeyEnv(env)) != null;
     if (!has_literal and !has_from_env) m.credential = true;
+    if (ephemeralAuth(env) == .jwt_hs256) {
+        const has_secret = envNonEmpty(env, env_api_secret) != null or envNonEmpty(env, ephemeralSecretEnv(env)) != null;
+        if (!has_secret) m.credential = true;
+    }
     return m;
 }
 
@@ -347,8 +362,8 @@ pub fn loadEphemeral(gpa: Allocator, env: Env) Error!Config {
     if (envNonEmpty(env, env_api_key)) |k| {
         ep.api_key = try arena.dupe(u8, k);
         ep.resolved_key = ep.api_key;
-    } else if (auth == .none) {
-        // Local server: nothing to resolve, and no auth header is sent.
+    } else if (!auth.needsStaticKey()) {
+        // Local server, or a token minted from the metadata server at call time.
     } else {
         const key_env = ephemeralKeyEnv(env);
         ep.api_key_env = try arena.dupe(u8, key_env);
@@ -356,6 +371,20 @@ pub fn loadEphemeral(gpa: Allocator, env: Env) Error!Config {
             ep.resolved_key = try arena.dupe(u8, val);
         } else {
             return Error.EphemeralNoCredential;
+        }
+    }
+    if (auth == .jwt_hs256) {
+        if (envNonEmpty(env, env_api_secret)) |s| {
+            ep.api_secret = try arena.dupe(u8, s);
+            ep.resolved_secret = ep.api_secret;
+        } else {
+            const secret_env = ephemeralSecretEnv(env);
+            ep.api_secret_env = try arena.dupe(u8, secret_env);
+            if (envNonEmpty(env, secret_env)) |val| {
+                ep.resolved_secret = try arena.dupe(u8, val);
+            } else {
+                return Error.EphemeralNoCredential;
+            }
         }
     }
 
@@ -496,23 +525,12 @@ fn parseEndpoint(arena: Allocator, env: Env, v: Value) !types.Endpoint {
 
     if (getStr(obj, "api_key")) |k| ep.api_key = try arena.dupe(u8, k);
     if (getStr(obj, "api_key_env")) |k| ep.api_key_env = try arena.dupe(u8, k);
+    if (getStr(obj, "api_secret")) |k| ep.api_secret = try arena.dupe(u8, k);
+    if (getStr(obj, "api_secret_env")) |k| ep.api_secret_env = try arena.dupe(u8, k);
     if (getStr(obj, "auth")) |a| {
         ep.auth = types.AuthScheme.fromString(a) orelse return Error.UnknownAuth;
     }
-
-    // Resolve credential now when possible, but never fail here: listing and
-    // `config show` must work without keys present. Generation validates later.
-    // Trim surrounding whitespace/newlines: a trailing '\n' (common with
-    // `export KEY=$(cat file)`) would otherwise produce an invalid auth header.
-    if (ep.api_key) |k| {
-        const t = std.mem.trim(u8, k, " \t\r\n");
-        if (t.len > 0) ep.resolved_key = t;
-    } else if (ep.api_key_env) |name| {
-        if (env.get(name)) |val| {
-            const t = std.mem.trim(u8, val, " \t\r\n");
-            if (t.len > 0) ep.resolved_key = try arena.dupe(u8, t);
-        }
-    }
+    try resolveEndpointKeys(arena, env, &ep);
     return ep;
 }
 
@@ -813,6 +831,10 @@ fn applyTomlPair(arena: Allocator, section: TomlSection, key: []const u8, value:
                 ep.api_key = try arena.dupe(u8, try scalarString(value));
             } else if (std.mem.eql(u8, key, "api_key_env")) {
                 ep.api_key_env = try arena.dupe(u8, try scalarString(value));
+            } else if (std.mem.eql(u8, key, "api_secret")) {
+                ep.api_secret = try arena.dupe(u8, try scalarString(value));
+            } else if (std.mem.eql(u8, key, "api_secret_env")) {
+                ep.api_secret_env = try arena.dupe(u8, try scalarString(value));
             } else if (std.mem.eql(u8, key, "auth")) {
                 const s = try scalarString(value);
                 ep.auth = types.AuthScheme.fromString(s) orelse return Error.UnknownAuth;
@@ -845,16 +867,26 @@ fn applyTomlRootPair(arena: Allocator, key: []const u8, value: TomlScalar, root:
     }
 }
 
-fn resolveEndpointKeys(arena: Allocator, env: Env, ep: *types.Endpoint) !void {
-    if (ep.api_key) |k| {
+fn resolveOne(arena: Allocator, env: Env, literal: ?[]const u8, env_name: ?[]const u8) !?[]const u8 {
+    if (literal) |k| {
         const t = std.mem.trim(u8, k, " \t\r\n");
-        if (t.len > 0) ep.resolved_key = t;
-    } else if (ep.api_key_env) |name| {
+        if (t.len > 0) return t;
+    } else if (env_name) |name| {
         if (env.get(name)) |val| {
             const t = std.mem.trim(u8, val, " \t\r\n");
-            if (t.len > 0) ep.resolved_key = try arena.dupe(u8, t);
+            if (t.len > 0) return try arena.dupe(u8, t);
         }
     }
+    return null;
+}
+
+fn resolveEndpointKeys(arena: Allocator, env: Env, ep: *types.Endpoint) !void {
+    // Resolve now when possible, but never fail here: listing and `config show`
+    // must work without keys present. Generation validates later.
+    // Trim surrounding whitespace/newlines: a trailing '\n' (common with
+    // `export KEY=$(cat file)`) would otherwise produce an invalid auth header.
+    ep.resolved_key = try resolveOne(arena, env, ep.api_key, ep.api_key_env);
+    ep.resolved_secret = try resolveOne(arena, env, ep.api_secret, ep.api_secret_env);
 }
 
 /// Parse config from raw TOML bytes.
@@ -1090,6 +1122,8 @@ pub fn toJsonAlloc(arena: Allocator, cfg: Config) ![]const u8 {
             try appendJsonFieldString(&out, arena, "base_url", ep.base_url, &first, "          ");
             if (ep.api_key) |v| try appendJsonFieldString(&out, arena, "api_key", v, &first, "          ");
             if (ep.api_key_env) |v| try appendJsonFieldString(&out, arena, "api_key_env", v, &first, "          ");
+            if (ep.api_secret) |v| try appendJsonFieldString(&out, arena, "api_secret", v, &first, "          ");
+            if (ep.api_secret_env) |v| try appendJsonFieldString(&out, arena, "api_secret_env", v, &first, "          ");
             try appendJsonFieldString(&out, arena, "auth", ep.auth.toString(), &first, "          ");
             try out.appendSlice(arena, "\n        }");
         }
@@ -1122,6 +1156,8 @@ pub fn toTomlAlloc(arena: Allocator, cfg: Config) ![]const u8 {
             try appendFmt(&out, arena, "base_url = {s}\n", .{try tomlStringAlloc(arena, ep.base_url)});
             if (ep.api_key) |v| try appendFmt(&out, arena, "api_key = {s}\n", .{try tomlStringAlloc(arena, v)});
             if (ep.api_key_env) |v| try appendFmt(&out, arena, "api_key_env = {s}\n", .{try tomlStringAlloc(arena, v)});
+            if (ep.api_secret) |v| try appendFmt(&out, arena, "api_secret = {s}\n", .{try tomlStringAlloc(arena, v)});
+            if (ep.api_secret_env) |v| try appendFmt(&out, arena, "api_secret_env = {s}\n", .{try tomlStringAlloc(arena, v)});
             try appendFmt(&out, arena, "auth = {s}\n", .{try tomlStringAlloc(arena, ep.auth.toString())});
         }
 

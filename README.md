@@ -212,6 +212,27 @@ a dependency-free reference server (adapting any local runtime through a command
 template) and the config block live in
 [`integrations/ltx2`](integrations/ltx2/README.md).
 
+Configured backends, with no built-in preset because the URL is account-specific:
+Wan image and video (`dashscope_image`, `dashscope_video`, `DASHSCOPE_API_KEY`),
+Vidu (`vidu_video`, `Authorization: Token`), Kling v1 (`kling_video`,
+`jwt_hs256` with `KLING_ACCESS_KEY` + `KLING_SECRET_KEY`; imagine does not sign
+RS256 service-account JWTs), MiniMax video (`minimax_video`; the CDN download
+does not carry the API key), and SiliconFlow image (`siliconflow_image`).
+`--first-frame`, `--last-frame`, and `--ref-image` are separate roles.
+`--image` together with `--first-frame` is a usage error. Vidu reference images
+and frames are different APIs and cannot be mixed. A last frame requires a first
+frame. Examples are comments in `config.example.toml`.
+
+Speech is `media=audio`. `tts_http` is imagine's own protocol
+([`integrations/qwen3-tts`](integrations/qwen3-tts/README.md)).
+`google_cloud_tts` is Cloud Text-to-Speech REST (`GOOGLE_CLOUD_TTS_TOKEN` or
+`auth = "google_metadata"`), not a Gemini API key. `gemini_tts` is the
+Interactions speech API (`gemini-3.8-flash-tts`), not `gemini_video`.
+`--json` adds `audios[]` and leaves `images[]` and `videos[]` empty.
+`imagine voices -m <model>` lists voices when the backend publishes them.
+A strict `--stream` is rejected before the generate POST when the server reports
+`streaming: false`. Qwen's `non_streaming_mode=false` is that case.
+
 ### Spend authorization
 
 Every task that carries a credential is a request a provider may bill for, so

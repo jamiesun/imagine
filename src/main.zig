@@ -15,6 +15,8 @@ const util = @import("util.zig");
 const version = @import("version.zig");
 const overlay = @import("overlay.zig");
 const text = @import("text.zig");
+const check = @import("check.zig");
+const audio_util = @import("audio.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -69,6 +71,7 @@ fn runCommand(ctx: Ctx, cmd: cli.Command) !u8 {
         .config_show => |c| cmdConfigShow(ctx, c),
         .models => |c| cmdModels(ctx, c),
         .generate => |g| cmdGenerate(ctx, g),
+        .voices => |v| cmdVoices(ctx, v),
         .batch => |b| cmdBatch(ctx, b),
         .svg_render => |r| cmdSvgRender(ctx, r),
         .png_compose => |p| cmdPngCompose(ctx, p),
@@ -240,6 +243,7 @@ fn cmdModels(ctx: Ctx, c: cli.Common) !u8 {
             credential_status: []const u8,
             availability: []const u8,
             source: []const u8,
+            capabilities: types.Capabilities,
         };
         var items = try ctx.arena.alloc(Item, cfg.models.len + presets.len);
         var i: usize = 0;
@@ -253,6 +257,7 @@ fn cmdModels(ctx: Ctx, c: cli.Common) !u8 {
                 .credential_status = credentialStatus(m),
                 .availability = "unknown",
                 .source = cfg.source.toString(),
+                .capabilities = m.backend.capabilities(),
             };
             i += 1;
         }
@@ -268,6 +273,7 @@ fn cmdModels(ctx: Ctx, c: cli.Common) !u8 {
                 .credential_status = credentialStatus(m),
                 .availability = "unknown",
                 .source = "preset",
+                .capabilities = m.backend.capabilities(),
             };
             i += 1;
         }
@@ -298,9 +304,23 @@ fn credentialStatus(m: types.ModelConfig) []const u8 {
     var required: usize = 0;
     var configured: usize = 0;
     for (m.endpoints) |ep| {
-        if (ep.auth == .none) continue;
-        required += 1;
-        if (ep.resolved_key != null) configured += 1;
+        switch (ep.auth) {
+            .none => continue,
+            // The token is minted at call time. Listing does not contact the
+            // metadata server, and there is no static key to be "missing".
+            .google_metadata => {
+                required += 1;
+                configured += 1;
+            },
+            .jwt_hs256 => {
+                required += 1;
+                if (ep.resolved_key != null and ep.resolved_secret != null) configured += 1;
+            },
+            else => {
+                required += 1;
+                if (ep.resolved_key != null) configured += 1;
+            },
+        }
     }
     if (required == 0) return "not_required";
     if (configured == 0) return "missing";
@@ -325,7 +345,12 @@ fn spendItem(model: *const types.ModelConfig, endpoint: *const types.Endpoint, r
         .model = model.name,
         .kind = model.backend,
         .req = req,
-        .billable = endpoint.auth != .none and endpoint.resolved_key != null,
+        .billable = switch (endpoint.auth) {
+            .none => false,
+            .google_metadata => true,
+            .jwt_hs256 => endpoint.resolved_key != null and endpoint.resolved_secret != null,
+            else => endpoint.resolved_key != null,
+        },
     };
 }
 
@@ -490,6 +515,70 @@ fn spendRatio(req: types.GenRequest) []const u8 {
     return "provider-default";
 }
 
+fn cmdVoices(ctx: Ctx, v: cli.Voices) !u8 {
+    var cfg = loadConfig(ctx, v.common.config_path) catch |e| return reportConfigError(ctx, e, v.common.config_path);
+    defer cfg.deinit();
+    const model = (try resolveModel(ctx, &cfg, v.model)) orelse return 2;
+    if (!model.backend.capabilities().voice_list) {
+        try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "backend {s} does not publish a voice list\n", .{model.backend.toString()}));
+        return 2;
+    }
+    const req = types.GenRequest{ .prompt = "", .api_model = model.api_model };
+    const endpoint = &model.endpoints[0];
+    if (!try authorizeSpend(ctx, &.{spendItem(model, endpoint, req)}, spendAuthorized(ctx, v.authorize_spend))) return 2;
+
+    const url = switch (model.backend) {
+        .google_cloud_tts => try @import("backends/google_cloud_tts.zig").voicesUrl(ctx.arena, endpoint.base_url),
+        .tts_http => try @import("backends/tts_http.zig").siblingUrl(ctx.arena, endpoint.base_url, "voices"),
+        else => {
+            try printErr(ctx.io, "this backend has no voices URL\n");
+            return 2;
+        },
+    };
+    var client = std.http.Client{ .allocator = ctx.gpa, .io = ctx.io };
+    defer client.deinit();
+    const res = try backend.fetchAuthorized(&client, ctx.arena, model, endpoint, url, ctx.io);
+    if (res.err) |msg| {
+        try printErr(ctx.io, msg);
+        try printErr(ctx.io, "\n");
+        return 1;
+    }
+    if (res.status >= 400) {
+        try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "voices request failed (HTTP {d})\n", .{res.status}));
+        return 1;
+    }
+    const names = try voiceNamesFromBody(ctx.arena, res.body);
+    if (v.common.json) {
+        const out = try std.json.Stringify.valueAlloc(ctx.arena, names, .{ .whitespace = .indent_2 });
+        try outf(ctx, "{s}\n", .{out});
+    } else {
+        if (names.len == 0) try outf(ctx, "(no voices)\n", .{});
+        for (names) |name| try outf(ctx, "{s}\n", .{name});
+    }
+    return 0;
+}
+
+fn voiceNamesFromBody(allocator: std.mem.Allocator, body: []const u8) ![][]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return &.{};
+    defer parsed.deinit();
+    const root = switch (parsed.value) {
+        .object => |o| o.get("voices") orelse return &.{},
+        .array => parsed.value,
+        else => return &.{},
+    };
+    if (root != .array) return &.{};
+    var out = std.ArrayList([]const u8).empty;
+    for (root.array.items) |item| switch (item) {
+        .string => |s| try out.append(allocator, try allocator.dupe(u8, s)),
+        .object => |o| {
+            const name = if (o.get("name")) |v| (if (v == .string) v.string else null) else null;
+            if (name) |s| try out.append(allocator, try allocator.dupe(u8, s));
+        },
+        else => {},
+    };
+    return out.toOwnedSlice(allocator);
+}
+
 // ---------------------------------------------------------------------------
 // generate
 // ---------------------------------------------------------------------------
@@ -501,7 +590,7 @@ fn cmdGenerate(ctx: Ctx, g: cli.Generate) !u8 {
     const model = (try resolveModel(ctx, &cfg, g.model)) orelse return 2;
 
     var req = types.GenRequest{
-        .prompt = g.prompt.?,
+        .prompt = g.prompt orelse "",
         .api_model = model.api_model,
         .size = g.size,
         .width = g.width,
@@ -518,58 +607,76 @@ fn cmdGenerate(ctx: Ctx, g: cli.Generate) !u8 {
         .watermark = g.watermark,
     };
     req.applyDefaults(model.defaults);
-    if (!try validateInputImageCount(ctx, model.backend, g.images.len)) return 2;
-    req.images = readInputImages(ctx, g.images) catch |e| switch (e) {
-        error.InputImageUnreadable => return 2,
-        else => return e,
-    };
-
-    if (g.dry_run) {
-        return dryRun(ctx, model, req, g.n, &cfg, g.poll_interval, g.timeout) catch |e| switch (e) {
-            error.DryRunBodyUnavailable => 2,
-            else => e,
-        };
-    }
-    if (!try authorizeSpend(ctx, try generateSpendItems(ctx, model, req, g.n), spendAuthorized(ctx, g.authorize_spend))) return 2;
+    if (try fillGenerateRequest(ctx, g, model.backend, &req)) |code| return code;
 
     var client = std.http.Client{ .allocator = ctx.gpa, .io = ctx.io };
     defer client.deinit();
 
-    // URLs are fetched here when the provider only takes bytes (local files
-    // were already read above). Resolve all references before tasks copy them.
-    if (req.images.len > 0) {
-        const resolved = try ctx.arena.alloc(types.InputImage, req.images.len);
-        for (req.images, 0..) |img, i| {
-            resolved[i] = backend.resolveInputImage(&client, ctx.arena, model.backend, img) catch {
-                try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "cannot fetch --image '{s}' for backend {s}\n", .{ img.source, model.backend.toString() }));
-                return 1;
-            };
-        }
-        req.images = resolved;
+    var caps_override: ?types.Capabilities = null;
+    if (!g.dry_run and model.backend == .tts_http) {
+        caps_override = fetchTtsCaps(ctx, &client, model, &model.endpoints[0]) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Usage => return 2,
+            else => return e,
+        };
     }
 
-    // Resolve the output base path and extension: a video model defaults to
-    // .mp4 while every image backend keeps its provider format.
-    const ext = backend.outputExt(model.backend, req.output_format);
+    const expanded = try expandAudioRequests(ctx, model.backend, req, caps_override);
+    if (expanded.segmented and g.n > 1) {
+        try printErr(ctx.io, "-n cannot be combined with long-text or dialogue expansion; one request already becomes several files\n");
+        return 2;
+    }
+    for (expanded.requests) |*item| {
+        if (try check.usageError(ctx.arena, model.backend, item.*, caps_override)) |msg| {
+            try printErr(ctx.io, msg);
+            try printErr(ctx.io, "\n");
+            return 2;
+        }
+        applyStream(item, model.backend, caps_override);
+    }
+
+    if (g.dry_run) {
+        if (model.backend == .tts_http and g.stream == .on) {
+            try printErr(ctx.io, "dry-run did not fetch /capabilities; a real run rejects --stream when the server reports streaming false\n");
+        }
+        for (expanded.requests, 0..) |item, i| {
+            if (expanded.requests.len > 1) try outf(ctx, "segment {d}/{d}\n", .{ i + 1, expanded.requests.len });
+            const code = dryRun(ctx, model, item, if (expanded.requests.len == 1) g.n else 1, &cfg, g.poll_interval, g.timeout) catch |e| switch (e) {
+                error.DryRunBodyUnavailable => return 2,
+                else => |err| return err,
+            };
+            if (code != 0) return code;
+        }
+        return 0;
+    }
+
+    const task_count: u32 = if (expanded.requests.len == 1) g.n else @intCast(expanded.requests.len);
+    if (!try authorizeSpend(ctx, try generateSpendItems(ctx, model, expanded.requests[0], task_count), spendAuthorized(ctx, g.authorize_spend))) return 2;
+
+    for (expanded.requests) |*item| {
+        if (try resolveRequestImages(ctx, &client, model.backend, item)) |code| return code;
+    }
+
+    const ext = backend.outputExt(model.backend, expanded.requests[0].output_format);
     const base = try resolveOutputBase(ctx, &cfg, g.output, ext);
 
-    // Build one task per requested asset, round-robining endpoints.
-    var tasks = try ctx.arena.alloc(scheduler.Task, g.n);
-    for (0..g.n) |i| {
-        const path = if (g.n == 1) base else try util.numberedPath(ctx.arena, base, i + 1);
+    var tasks = try ctx.arena.alloc(scheduler.Task, task_count);
+    for (0..task_count) |i| {
+        const path = if (task_count == 1) base else try util.numberedPath(ctx.arena, base, i + 1);
+        const item = if (expanded.requests.len == 1) expanded.requests[0] else expanded.requests[i];
         tasks[i] = .{
             .model = model,
             .endpoint = &model.endpoints[i % model.endpoints.len],
-            .req = req,
+            .req = item,
             .output_path = path,
             .arena = std.heap.ArenaAllocator.init(ctx.gpa),
         };
     }
     defer for (tasks) |*t| t.arena.deinit();
 
-    const conc = chooseConcurrency(g.concurrency, cfg.concurrency, model.endpoints.len, g.n);
+    const conc = chooseConcurrency(g.concurrency, cfg.concurrency, model.endpoints.len, @as(usize, task_count));
     if (!g.quiet and !g.common.json) {
-        try outf(ctx, "generating {d} {s}(s) with '{s}' across {d} endpoint(s), concurrency {d}\n", .{ g.n, model.backend.media().toString(), model.name, model.endpoints.len, conc });
+        try outf(ctx, "generating {d} {s}(s) with '{s}' across {d} endpoint(s), concurrency {d}\n", .{ task_count, model.backend.media().toString(), model.name, model.endpoints.len, conc });
     }
 
     scheduler.run(tasks, .{
@@ -581,7 +688,226 @@ fn cmdGenerate(ctx: Ctx, g: cli.Generate) !u8 {
         .timeout_secs = g.timeout orelse cfg.task_timeout,
     });
 
+    if (expanded.segmented) writeSegmentsSidecar(ctx, base, expanded, tasks) catch {};
     return try renderResults(ctx, model, tasks, g.common.json);
+}
+
+const Expanded = struct {
+    requests: []types.GenRequest,
+    segmented: bool = false,
+    segments: []const audio_util.Segment = &.{},
+};
+
+fn fillGenerateRequest(ctx: Ctx, g: cli.Generate, kind: types.BackendKind, req: *types.GenRequest) !?u8 {
+    if (g.text_file) |path| req.prompt = try readTextInput(ctx, path, "--text-file") orelse return 2;
+    if (g.ssml_file) |path| req.prompt = try readTextInput(ctx, path, "--ssml-file") orelse return 2;
+
+    var images = std.ArrayList(types.InputImage).empty;
+    if (try appendInputImages(ctx, &images, g.images, .auto)) |code| return code;
+    if (try appendInputImages(ctx, &images, g.first_frames, .first_frame)) |code| return code;
+    if (try appendInputImages(ctx, &images, g.last_frames, .last_frame)) |code| return code;
+    if (try appendInputImages(ctx, &images, g.ref_images, .reference)) |code| return code;
+    req.images = try images.toOwnedSlice(ctx.arena);
+
+    const audio_flags = g.voice != null or g.language != null or g.style != null or g.speed != null or
+        g.pitch != null or g.voice_reference != null or g.reference_text != null or g.sample_rate != null or
+        g.speech_mode != null or g.dialogue_file != null or g.ssml_file != null or g.text_file != null or
+        g.stream != .off;
+    if (audio_flags or kind.media() == .audio) {
+        var params = types.AudioParams{
+            .voice = g.voice,
+            .language = g.language,
+            .style = g.style,
+            .speed = g.speed,
+            .pitch = g.pitch,
+            .sample_rate = g.sample_rate,
+            .reference_text = g.reference_text,
+            .stream = g.stream,
+            .ssml = g.ssml_file != null,
+        };
+        if (g.speech_mode) |raw| {
+            params.mode = types.SpeechMode.fromString(raw) orelse {
+                try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "invalid --mode: {s}\n", .{raw}));
+                return 2;
+            };
+        }
+        if (g.dialogue_file) |path| {
+            const raw = try readTextInput(ctx, path, "--dialogue-file") orelse return 2;
+            params.dialogue = audio_util.parseDialogue(ctx.arena, raw) catch {
+                try printErr(ctx.io, "--dialogue-file must be a JSON array of {speaker, text} objects\n");
+                return 2;
+            };
+            if (g.speech_mode == null) params.mode = .dialogue;
+        }
+        if (g.voice_reference) |path| {
+            params.reference = readAudioInput(ctx, path) catch |e| switch (e) {
+                error.InputImageUnreadable => return 2,
+                else => return e,
+            };
+        }
+        req.audio = params;
+    }
+    return null;
+}
+
+fn appendInputImages(ctx: Ctx, list: *std.ArrayList(types.InputImage), sources: []const []const u8, role: types.ImageRole) !?u8 {
+    for (sources) |source| {
+        var img = readInputImage(ctx, source) catch |e| switch (e) {
+            error.InputImageUnreadable => return 2,
+            else => return e,
+        };
+        img.role = role;
+        try list.append(ctx.arena, img);
+    }
+    return null;
+}
+
+fn readTextInput(ctx: Ctx, raw: []const u8, flag: []const u8) !?[]u8 {
+    const path = try expandPath(ctx, raw);
+    return std.Io.Dir.cwd().readFileAlloc(ctx.io, path, ctx.arena, .limited(8 * 1024 * 1024)) catch |e| {
+        try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "cannot read {s} '{s}': {s}\n", .{ flag, path, @errorName(e) }));
+        return null;
+    };
+}
+
+fn readAudioInput(ctx: Ctx, raw: []const u8) !types.AudioInput {
+    if (util.isHttpUrl(raw)) {
+        return .{ .source = try ctx.arena.dupe(u8, raw), .mime = "audio/wav" };
+    }
+    const path = try expandPath(ctx, raw);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, ctx.arena, .limited(max_input_image_bytes)) catch |e| {
+        try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "cannot read --voice-reference '{s}': {s}\n", .{ path, @errorName(e) }));
+        return error.InputImageUnreadable;
+    };
+    return .{ .source = path, .bytes = bytes, .mime = "audio/wav" };
+}
+
+fn expandAudioRequests(ctx: Ctx, kind: types.BackendKind, req: types.GenRequest, override: ?types.Capabilities) !Expanded {
+    const caps = override orelse kind.capabilities();
+    const params = req.audio orelse {
+        const one = try ctx.arena.alloc(types.GenRequest, 1);
+        one[0] = req;
+        return .{ .requests = one };
+    };
+    if (params.mode == .dialogue and params.dialogue.len > 1) {
+        var speakers: u32 = 0;
+        for (params.dialogue, 0..) |turn, i| {
+            var seen = false;
+            for (params.dialogue[0..i]) |prev| {
+                if (std.mem.eql(u8, prev.speaker, turn.speaker)) seen = true;
+            }
+            if (!seen) speakers += 1;
+        }
+        const native = caps.native_dialogue and speakers <= caps.max_speakers and speakers > 0;
+        if (!native) {
+            const out = try ctx.arena.alloc(types.GenRequest, params.dialogue.len);
+            for (params.dialogue, 0..) |turn, i| {
+                var copy = req;
+                var audio = params;
+                audio.mode = .speech;
+                audio.dialogue = &.{};
+                audio.voice = turn.voice orelse params.voice;
+                audio.style = turn.style orelse params.style;
+                audio.language = turn.language orelse params.language;
+                copy.prompt = turn.text;
+                copy.audio = audio;
+                out[i] = copy;
+            }
+            return .{ .requests = out, .segmented = true };
+        }
+    }
+    if (caps.max_chars > 0 and params.mode != .dialogue and !params.ssml and audio_util.utf8Len(req.prompt) > caps.max_chars) {
+        const parts = try audio_util.splitText(ctx.arena, req.prompt, caps.max_chars);
+        const out = try ctx.arena.alloc(types.GenRequest, parts.len);
+        for (parts, 0..) |part, i| {
+            var copy = req;
+            copy.prompt = part.text;
+            out[i] = copy;
+        }
+        return .{ .requests = out, .segmented = true, .segments = parts };
+    }
+    const one = try ctx.arena.alloc(types.GenRequest, 1);
+    one[0] = req;
+    return .{ .requests = one };
+}
+
+fn applyStream(req: *types.GenRequest, kind: types.BackendKind, override: ?types.Capabilities) void {
+    if (req.audio == null) return;
+    var params = req.audio.?;
+    const streaming = (override orelse kind.capabilities()).streaming;
+    params.stream_applied = kind == .tts_http and streaming and (params.stream == .on or params.stream == .auto);
+    req.audio = params;
+}
+
+fn fetchTtsCaps(ctx: Ctx, client: *std.http.Client, model: *const types.ModelConfig, endpoint: *const types.Endpoint) !types.Capabilities {
+    const tts = @import("backends/tts_http.zig");
+    const url = try tts.siblingUrl(ctx.arena, endpoint.base_url, "capabilities");
+    const res = try backend.fetchAuthorized(client, ctx.arena, model, endpoint, url, ctx.io);
+    if (res.err) |msg| {
+        try printErr(ctx.io, msg);
+        try printErr(ctx.io, "\n");
+        return error.Usage;
+    }
+    if (res.status >= 400) {
+        try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "tts capabilities request failed (HTTP {d})\n", .{res.status}));
+        return error.Usage;
+    }
+    const server = tts.parseCapabilities(ctx.arena, res.body) catch {
+        try printErr(ctx.io, "tts capabilities response was not the imagine.tts_http document\n");
+        return error.Usage;
+    };
+    return server.narrow();
+}
+
+fn resolveRequestImages(ctx: Ctx, client: *std.http.Client, kind: types.BackendKind, req: *types.GenRequest) !?u8 {
+    if (req.images.len > 0) {
+        const resolved = try ctx.arena.alloc(types.InputImage, req.images.len);
+        for (req.images, 0..) |img, i| {
+            resolved[i] = backend.resolveInputImage(client, ctx.arena, kind, img) catch {
+                try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "cannot fetch --image '{s}' for backend {s}\n", .{ img.source, kind.toString() }));
+                return 1;
+            };
+        }
+        req.images = resolved;
+    }
+    if (req.audio) |*params| {
+        if (params.reference) |ref| {
+            if (ref.bytes == null and util.isHttpUrl(ref.source)) {
+                const got = backend.fetchAuthorized(client, ctx.arena, &.{ .name = "", .backend = kind, .api_model = req.api_model, .endpoints = &.{} }, &.{ .base_url = "", .auth = .none }, ref.source, ctx.io) catch return 1;
+                // A reference download must not send the API key. auth none above does that.
+                if (got.err != null or got.status >= 400) {
+                    try printErr(ctx.io, try std.fmt.allocPrint(ctx.arena, "cannot fetch --voice-reference '{s}'\n", .{ref.source}));
+                    return 1;
+                }
+                params.reference = .{ .source = ref.source, .bytes = got.body, .mime = ref.mime };
+            }
+        }
+    }
+    return null;
+}
+
+fn writeSegmentsSidecar(ctx: Ctx, base: []const u8, expanded: Expanded, tasks: []scheduler.Task) !void {
+    const Side = struct {
+        index: usize,
+        char_start: usize = 0,
+        char_end: usize = 0,
+        path: []const u8,
+        text: []const u8,
+    };
+    var rows = try ctx.arena.alloc(Side, tasks.len);
+    for (tasks, 0..) |task, i| {
+        const seg = if (i < expanded.segments.len) expanded.segments[i] else audio_util.Segment{ .text = task.req.prompt, .char_start = 0, .char_end = 0 };
+        rows[i] = .{
+            .index = i + 1,
+            .char_start = seg.char_start,
+            .char_end = seg.char_end,
+            .path = if (task.written_paths.len > 0) task.written_paths[0] else task.output_path,
+            .text = task.req.prompt,
+        };
+    }
+    const doc = try std.json.Stringify.valueAlloc(ctx.arena, rows, .{ .whitespace = .indent_2 });
+    const path = try std.fmt.allocPrint(ctx.arena, "{s}.segments.json", .{base});
+    try std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = path, .data = doc });
 }
 
 /// `--image` on a backend that takes no image input. Silently ignoring the file
@@ -631,6 +957,10 @@ fn dryRunBody(ctx: Ctx, model: *const types.ModelConfig, req: types.GenRequest) 
         },
         error.TooManyReferenceImages => {
             try printErr(ctx.io, "this backend supports at most 5 reference images\n");
+            return error.DryRunBodyUnavailable;
+        },
+        error.MissingVoice => {
+            try printErr(ctx.io, "this request needs --voice\n");
             return error.DryRunBodyUnavailable;
         },
     };
@@ -802,11 +1132,22 @@ fn cmdBatch(ctx: Ctx, b: cli.Batch) !u8 {
                 return 1;
             },
         };
-        if (!try validateInputImageCount(ctx, model.backend, image_sources.len)) return 2;
         req.images = readInputImages(ctx, image_sources) catch |e| switch (e) {
             error.InputImageUnreadable => return 2,
             else => return e,
         };
+        if (jsonStr(job, "voice")) |voice| {
+            req.audio = .{
+                .voice = try ctx.arena.dupe(u8, voice),
+                .language = if (jsonStr(job, "language")) |s| try ctx.arena.dupe(u8, s) else null,
+                .style = if (jsonStr(job, "style")) |s| try ctx.arena.dupe(u8, s) else null,
+            };
+        }
+        if (try check.usageError(ctx.arena, model.backend, req, null)) |msg| {
+            try printErr(ctx.io, msg);
+            try printErr(ctx.io, "\n");
+            return 2;
+        }
 
         const n = jsonU32(job, "n") orelse 1;
         const ext = backend.outputExt(model.backend, req.output_format);
@@ -1014,17 +1355,48 @@ fn renderResults(ctx: Ctx, model: *const types.ModelConfig, tasks: []scheduler.T
 
     if (json) {
         const AssetOut = struct { path: []const u8, bytes: usize };
+        const AudioOut = struct {
+            path: []const u8,
+            bytes: usize,
+            mime: ?[]const u8 = null,
+            container: ?[]const u8 = null,
+            codec: ?[]const u8 = null,
+            sample_rate_hz: ?u32 = null,
+            channels: ?u32 = null,
+            duration_ms: ?u64 = null,
+            voice: ?[]const u8 = null,
+            alignment_path: ?[]const u8 = null,
+            alignment: ?[]const u8 = null,
+            stream_applied: ?bool = null,
+        };
         var images = std.ArrayList(AssetOut).empty;
         var videos = std.ArrayList(AssetOut).empty;
+        var audios = std.ArrayList(AudioOut).empty;
         var errors = std.ArrayList([]const u8).empty;
-        // Assets land under the key matching the model's media kind; the other
-        // array stays present (and empty) so the shape never changes.
-        const bucket = if (model.backend.media() == .video) &videos else &images;
+        // Assets land under the key matching the model's media kind. The other
+        // arrays stay present (and empty) so the image/video shape never changes.
         for (tasks) |*t| {
-            if (t.ok()) {
-                for (t.written_paths) |p| try bucket.append(ctx.arena, .{ .path = p, .bytes = t.bytes_total });
-            } else {
+            if (!t.ok()) {
                 try errors.append(ctx.arena, t.err.?);
+                continue;
+            }
+            switch (model.backend.media()) {
+                .video => for (t.written_paths) |p| try videos.append(ctx.arena, .{ .path = p, .bytes = t.bytes_total }),
+                .audio => for (t.written_paths) |p| try audios.append(ctx.arena, .{
+                    .path = p,
+                    .bytes = t.bytes_total,
+                    .mime = t.meta.mime,
+                    .container = t.meta.container,
+                    .codec = t.meta.codec,
+                    .sample_rate_hz = t.meta.sample_rate_hz,
+                    .channels = t.meta.channels,
+                    .duration_ms = t.meta.duration_ms,
+                    .voice = t.meta.voice,
+                    .alignment_path = t.alignment_path,
+                    .alignment = if (t.alignment_path != null) null else (t.meta.alignment orelse "unsupported"),
+                    .stream_applied = t.meta.stream_applied,
+                }),
+                .image => for (t.written_paths) |p| try images.append(ctx.arena, .{ .path = p, .bytes = t.bytes_total }),
             }
         }
         const Result = struct {
@@ -1037,6 +1409,7 @@ fn renderResults(ctx: Ctx, model: *const types.ModelConfig, tasks: []scheduler.T
             failed: usize,
             images: []AssetOut,
             videos: []AssetOut,
+            audios: []AudioOut,
             errors: [][]const u8,
         };
         const result = Result{
@@ -1049,6 +1422,7 @@ fn renderResults(ctx: Ctx, model: *const types.ModelConfig, tasks: []scheduler.T
             .failed = failed,
             .images = try images.toOwnedSlice(ctx.arena),
             .videos = try videos.toOwnedSlice(ctx.arena),
+            .audios = try audios.toOwnedSlice(ctx.arena),
             .errors = try errors.toOwnedSlice(ctx.arena),
         };
         const out = try std.json.Stringify.valueAlloc(ctx.arena, result, .{ .whitespace = .indent_2 });
@@ -1478,6 +1852,12 @@ test "only a task that carries a credential is billable" {
     try std.testing.expect(!spendItem(&model, &local, req).billable);
     try std.testing.expect(!spendItem(&model, &unkeyed, req).billable);
     try std.testing.expect(spendItem(&model, &keyed, req).billable);
+    const metadata = types.Endpoint{ .base_url = "http://metadata", .auth = .google_metadata };
+    try std.testing.expect(spendItem(&model, &metadata, req).billable);
+    const jwt_half = types.Endpoint{ .base_url = "http://kling", .auth = .jwt_hs256, .resolved_key = "ak" };
+    const jwt_full = types.Endpoint{ .base_url = "http://kling", .auth = .jwt_hs256, .resolved_key = "ak", .resolved_secret = "sk" };
+    try std.testing.expect(!spendItem(&model, &jwt_half, req).billable);
+    try std.testing.expect(spendItem(&model, &jwt_full, req).billable);
 }
 
 test {
