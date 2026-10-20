@@ -12,6 +12,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const backend = @import("backend.zig");
 const util = @import("util.zig");
+const audio = @import("audio.zig");
 
 pub const Task = struct {
     // ---- inputs (filled by caller) ----
@@ -29,6 +30,9 @@ pub const Task = struct {
     written_paths: []const []const u8 = &.{},
     bytes_total: usize = 0,
     err: ?[]const u8 = null,
+    /// Filled for audio. Image and video tasks leave the defaults.
+    meta: types.AudioMeta = .{},
+    alignment_path: ?[]const u8 = null,
 
     pub fn ok(self: *const Task) bool {
         return self.err == null;
@@ -129,7 +133,7 @@ fn processTask(ctx: *Context, task: *Task, index: usize) void {
         return;
     }
 
-    writeAssets(ctx.opts.io, a, task, result.assets) catch |e| {
+    writeAssets(ctx.opts.io, a, task, result) catch |e| {
         task.err = std.fmt.allocPrint(a, "failed to write output: {s}", .{@errorName(e)}) catch "write error";
         report(ctx, task, index);
         return;
@@ -138,10 +142,12 @@ fn processTask(ctx: *Context, task: *Task, index: usize) void {
     report(ctx, task, index);
 }
 
-fn writeAssets(io: std.Io, a: std.mem.Allocator, task: *Task, assets: [][]u8) !void {
+fn writeAssets(io: std.Io, a: std.mem.Allocator, task: *Task, result: backend.GenResult) !void {
+    const assets = result.assets;
     const paths = try a.alloc([]const u8, assets.len);
     var total: usize = 0;
     const cwd = std.Io.Dir.cwd();
+    const is_audio = task.model.backend.media() == .audio;
     for (assets, 0..) |asset, i| {
         const path = if (assets.len == 1)
             task.output_path
@@ -149,12 +155,42 @@ fn writeAssets(io: std.Io, a: std.mem.Allocator, task: *Task, assets: [][]u8) !v
             try util.numberedPath(a, task.output_path, i + 1);
 
         try util.ensureParentDir(io, cwd, path);
-        try cwd.writeFile(io, .{ .sub_path = path, .data = asset });
+        if (is_audio) {
+            const fmt = task.req.output_format orelse "wav";
+            if (std.ascii.eqlIgnoreCase(fmt, "wav") and !audio.validateWav(asset)) return error.InvalidWav;
+            try writeAtomic(io, a, cwd, path, asset);
+        } else {
+            try cwd.writeFile(io, .{ .sub_path = path, .data = asset });
+        }
         paths[i] = path;
         total += asset.len;
     }
     task.written_paths = paths;
     task.bytes_total = total;
+    if (is_audio) {
+        if (result.meta) |meta| task.meta = meta;
+        if (task.meta.alignment_json) |doc| {
+            if (paths.len > 0) {
+                const side = try std.fmt.allocPrint(a, "{s}.alignment.json", .{paths[0]});
+                try writeAtomic(io, a, cwd, side, doc);
+                task.alignment_path = side;
+            }
+        }
+    }
+}
+
+/// Write `data` via a sibling `*.partial` file and rename it into place.
+/// A failed rename deletes the partial so a later success check cannot see it.
+fn writeAtomic(io: std.Io, a: std.mem.Allocator, cwd: std.Io.Dir, path: []const u8, data: []const u8) !void {
+    const tmp = try std.fmt.allocPrint(a, "{s}.partial", .{path});
+    cwd.writeFile(io, .{ .sub_path = tmp, .data = data }) catch |e| {
+        cwd.deleteFile(io, tmp) catch {};
+        return e;
+    };
+    std.Io.Dir.rename(cwd, tmp, cwd, path, io) catch |e| {
+        cwd.deleteFile(io, tmp) catch {};
+        return e;
+    };
 }
 
 fn report(ctx: *Context, task: *Task, index: usize) void {

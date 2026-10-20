@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const version = @import("version.zig");
+const types = @import("types.zig");
 
 pub const Common = struct {
     config_path: ?[]const u8 = null,
@@ -45,6 +46,22 @@ pub const Generate = struct {
     /// Explicitly authorize requests routed to endpoints that may incur charges.
     authorize_spend: bool = false,
     quiet: bool = false,
+    first_frames: []const []const u8 = &.{},
+    last_frames: []const []const u8 = &.{},
+    ref_images: []const []const u8 = &.{},
+    text_file: ?[]const u8 = null,
+    ssml_file: ?[]const u8 = null,
+    dialogue_file: ?[]const u8 = null,
+    voice: ?[]const u8 = null,
+    language: ?[]const u8 = null,
+    style: ?[]const u8 = null,
+    speed: ?f32 = null,
+    pitch: ?f32 = null,
+    voice_reference: ?[]const u8 = null,
+    reference_text: ?[]const u8 = null,
+    sample_rate: ?u32 = null,
+    stream: types.StreamChoice = .off,
+    speech_mode: ?[]const u8 = null,
 };
 
 pub const Batch = struct {
@@ -114,9 +131,16 @@ pub const ConfigConvert = struct {
     force: bool = false,
 };
 
+pub const Voices = struct {
+    common: Common = .{},
+    model: ?[]const u8 = null,
+    authorize_spend: bool = false,
+};
+
 pub const Command = union(enum) {
     generate: Generate,
     batch: Batch,
+    voices: Voices,
     compose: Compose,
     svg_render: SvgRender,
     png_compose: PngCompose,
@@ -142,8 +166,9 @@ pub const usage =
     \\  imagine <command> [options]
     \\
     \\COMMANDS:
-    \\  generate        Generate image(s) or a video from a prompt
+    \\  generate        Generate an image, a video, or speech from a prompt
     \\  batch <file>    Generate from a JSON manifest of jobs
+    \\  voices          List voices for one audio model (-m)
     \\  svg render      Render an SVG to a PNG
     \\  png compose     Compose PNG layers over a base PNG
     \\  text render     Render styled text to a transparent PNG
@@ -158,19 +183,22 @@ pub const usage =
     \\
     \\GENERATE OPTIONS:
     \\  -m, --model <name>        Model to route to (optional if only one model)
-    \\  -p, --prompt <text>       Text prompt (required; or pass as positional)
+    \\  -p, --prompt <text>       Text prompt (or one of the text-file options below)
     \\  -o, --output <path>       Output file (single) or stem (multiple)
     \\  -n, --n <count>           Number of assets (default 1)
     \\  -s, --size <WxH|token>    Size string (openai_image); a ratio token for video
     \\      --width <px>          Width (azure_flux; also derives size for openai_image)
     \\      --height <px>         Height (azure_flux; also derives size for openai_image)
-    \\      --format <fmt>        png | jpeg | mp4 | mov  (provider output format)
+    \\      --format <fmt>        png | jpeg | mp4 | wav | mp3 | pcm | ogg
     \\      --compression <0-100> Output compression (openai_image)
     \\      --quality <q>         low | medium | high | auto   (openai_image)
     \\      --seed <int>          Seed (where supported)
     \\      --steps <n>           Denoising steps (qwen_image num_inference_steps)
     \\      --image <path|url>    Repeat for multi-ref (Qwen max 10, MAI max 5); one for others
     \\      --images <p1,p2,...>  Multiple reference images (comma-separated)
+    \\      --first-frame <path> Video first frame (not together with --image)
+    \\      --last-frame <path>  Video last frame (requires a first frame)
+    \\      --ref-image <path>   Role-specific reference (Vidu up to 7, Wan up to 9)
     \\      --watermark           Force the provider watermark on
     \\      --no-watermark        Force the provider watermark off
     \\  -c, --concurrency <num>   Parallel requests (default: endpoint count)
@@ -186,6 +214,23 @@ pub const usage =
     \\      --ratio <r>           16:9 | 9:16 | 1:1 | ...   (also --size <ratio>)
     \\      --poll-interval <sec> Seconds between task status polls (default 5)
     \\      --timeout <sec>       Give up on one video task after N seconds (default 600)
+    \\
+    \\AUDIO OPTIONS (tts_http | google_cloud_tts | gemini_tts):
+    \\      --text-file <path>   Prompt text from a file (instead of --prompt)
+    \\      --ssml-file <path>   SSML document (google_cloud_tts)
+    \\      --dialogue-file <p>  JSON array of {speaker,text,voice?,style?}
+    \\      --voice <name>       Voice name (required for Cloud TTS and Gemini TTS)
+    \\      --language <tag>     Language tag where the provider accepts one
+    \\      --style <text>       Style, or the voice description for voice_design
+    \\      --speed <float>      Speaking rate where supported
+    \\      --pitch <float>      Pitch where supported
+    \\      --mode <mode>        speech | voice_design | voice_clone | dialogue
+    \\      --voice-reference <p> Reference audio for voice_clone
+    \\      --reference-text <t> Transcript of that reference audio
+    \\      --sample-rate <hz>   Requested sample rate
+    \\      --stream [on|off|auto] Incremental audio. Bare --stream means on.
+    \\                          off is the default. A server that only buffers
+    \\                          the finished clip must say streaming false.
     \\
     \\SVG RENDER OPTIONS:
     \\      --input <svg>         Input SVG (required)
@@ -234,6 +279,15 @@ pub const usage =
     \\            seedance         (Ark Seedance video; env ARK_API_KEY)
     \\            gemini_video     (Gemini Omni video; env GEMINI_API_KEY)
     \\            ltx2_video       (self-hosted LTX-2 video service)
+    \\            dashscope_image  (Wan image; DASHSCOPE_API_KEY; no preset, URL is account-specific)
+    \\            dashscope_video  (Wan video; first/last frame; async header from the URL)
+    \\            vidu_video       (Vidu; Authorization: Token; ref images or frames, not both)
+    \\            kling_video      (Kling v1; jwt_hs256 access key + secret, or a bearer token)
+    \\            minimax_video    (MiniMax video; file retrieve then an unauthenticated CDN GET)
+    \\            siliconflow_image (SiliconFlow image; at most one reference)
+    \\            tts_http         (imagine TTS protocol; integrations/qwen3-tts)
+    \\            google_cloud_tts (Cloud Text-to-Speech REST, not a Gemini API key)
+    \\            gemini_tts       (Gemini Interactions speech; not gemini_video)
     \\  Video backends create a provider task and poll it: expect minutes, not
     \\  seconds. They write one file per task and default to the .mp4 extension.
     \\  Self-hosted endpoints (e.g. a local Qwen-Image server) need no credential:
@@ -342,6 +396,9 @@ pub fn parse(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
     if (std.mem.eql(u8, cmd, "models")) {
         return parseCommon(arena, args[1..], .models);
     }
+    if (std.mem.eql(u8, cmd, "voices")) {
+        return parseVoices(arena, args[1..]);
+    }
     if (std.mem.eql(u8, cmd, "config")) {
         return parseConfig(arena, args[1..]);
     }
@@ -359,6 +416,9 @@ fn missingValue(arena: std.mem.Allocator, name: []const u8) !Parsed {
 fn parseGenerate(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
     var g = Generate{};
     var images = std.ArrayList([]const u8).empty;
+    var first_frames = std.ArrayList([]const u8).empty;
+    var last_frames = std.ArrayList([]const u8).empty;
+    var ref_images = std.ArrayList([]const u8).empty;
     var cur = Cursor{ .args = args };
     var positional: ?[]const u8 = null;
 
@@ -432,6 +492,48 @@ fn parseGenerate(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
             g.common.json = true;
         } else if (std.mem.eql(u8, name, "--dry-run")) {
             g.dry_run = true;
+        } else if (std.mem.eql(u8, name, "--first-frame")) {
+            try first_frames.append(arena, (try cur.value(fs, arena)) orelse return missingValue(arena, name));
+        } else if (std.mem.eql(u8, name, "--last-frame")) {
+            try last_frames.append(arena, (try cur.value(fs, arena)) orelse return missingValue(arena, name));
+        } else if (std.mem.eql(u8, name, "--ref-image")) {
+            try ref_images.append(arena, (try cur.value(fs, arena)) orelse return missingValue(arena, name));
+        } else if (std.mem.eql(u8, name, "--text-file")) {
+            g.text_file = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--ssml-file")) {
+            g.ssml_file = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--dialogue-file")) {
+            g.dialogue_file = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--voice")) {
+            g.voice = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--language")) {
+            g.language = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--style")) {
+            g.style = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--speed")) {
+            const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+            g.speed = std.fmt.parseFloat(f32, v) catch return .{ .err = try std.fmt.allocPrint(arena, "invalid --speed: {s}", .{v}) };
+        } else if (std.mem.eql(u8, name, "--pitch")) {
+            const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+            g.pitch = std.fmt.parseFloat(f32, v) catch return .{ .err = try std.fmt.allocPrint(arena, "invalid --pitch: {s}", .{v}) };
+        } else if (std.mem.eql(u8, name, "--mode")) {
+            g.speech_mode = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--voice-reference")) {
+            g.voice_reference = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--reference-text")) {
+            g.reference_text = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--sample-rate")) {
+            const v = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+            g.sample_rate = parseU32(v) orelse return .{ .err = try std.fmt.allocPrint(arena, "invalid --sample-rate: {s}", .{v}) };
+        } else if (std.mem.eql(u8, name, "--stream")) {
+            if (fs.value) |v| {
+                g.stream = types.StreamChoice.fromString(v) orelse return .{ .err = try std.fmt.allocPrint(arena, "invalid --stream: {s}", .{v}) };
+            } else if (cur.i + 1 < args.len and types.StreamChoice.fromString(args[cur.i + 1]) != null) {
+                const v = (try cur.value(fs, arena)).?;
+                g.stream = types.StreamChoice.fromString(v).?;
+            } else {
+                g.stream = .on;
+            }
         } else if (std.mem.eql(u8, name, "--authorize-spend")) {
             g.authorize_spend = true;
         } else if (std.mem.eql(u8, name, "-q") or std.mem.eql(u8, name, "--quiet")) {
@@ -444,9 +546,17 @@ fn parseGenerate(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
     }
 
     g.images = try images.toOwnedSlice(arena);
+    g.first_frames = try first_frames.toOwnedSlice(arena);
+    g.last_frames = try last_frames.toOwnedSlice(arena);
+    g.ref_images = try ref_images.toOwnedSlice(arena);
+    const text_sources: usize = @intFromBool(g.prompt != null or positional != null) +
+        @intFromBool(g.text_file != null) +
+        @intFromBool(g.ssml_file != null) +
+        @intFromBool(g.dialogue_file != null);
+    if (text_sources > 1) return .{ .err = try arena.dupe(u8, "pass only one of --prompt, --text-file, --ssml-file, or --dialogue-file") };
+    if (text_sources == 0) return .{ .err = try arena.dupe(u8, "missing required option: --prompt") };
     if (g.prompt == null) g.prompt = positional;
     // --model is optional when exactly one model is configured (validated in main).
-    if (g.prompt == null) return .{ .err = try arena.dupe(u8, "missing required option: --prompt") };
     if (g.n == 0) return .{ .err = try arena.dupe(u8, "--n must be >= 1") };
     if (g.steps) |s| {
         if (s == 0) return .{ .err = try arena.dupe(u8, "--steps must be >= 1") };
@@ -666,6 +776,31 @@ fn parseText(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
     if (t.stroke_width < 0) return .{ .err = try arena.dupe(u8, "--stroke-width must be >= 0") };
     if (t.line_height <= 0) return .{ .err = try arena.dupe(u8, "--line-height must be > 0") };
     return .{ .command = .{ .text_render = t } };
+}
+
+fn parseVoices(arena: std.mem.Allocator, args: []const []const u8) !Parsed {
+    var v = Voices{};
+    var cur = Cursor{ .args = args };
+    var positional: ?[]const u8 = null;
+    while (cur.i < args.len) : (cur.i += 1) {
+        const fs = split(args[cur.i]);
+        const name = fs.name;
+        if (std.mem.eql(u8, name, "-m") or std.mem.eql(u8, name, "--model")) {
+            v.model = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--config")) {
+            v.common.config_path = (try cur.value(fs, arena)) orelse return missingValue(arena, name);
+        } else if (std.mem.eql(u8, name, "--json")) {
+            v.common.json = true;
+        } else if (std.mem.eql(u8, name, "--authorize-spend")) {
+            v.authorize_spend = true;
+        } else if (std.mem.startsWith(u8, name, "-")) {
+            return unknownFlag(arena, name);
+        } else if (positional == null) {
+            positional = try arena.dupe(u8, args[cur.i]);
+        }
+    }
+    if (v.model == null) v.model = positional;
+    return .{ .command = .{ .voices = v } };
 }
 
 fn parseCommon(arena: std.mem.Allocator, args: []const []const u8, comptime tag: std.meta.Tag(Command)) !Parsed {

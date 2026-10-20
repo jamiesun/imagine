@@ -176,8 +176,12 @@ imagine generate -m <model> -p <prompt> [-o -n -s --width --height \
         --format --compression --quality --seed --steps \
         --image [重复；Qwen 最多 10 张] --watermark/--no-watermark \
         --duration --resolution --ratio --poll-interval --timeout \
+        --first-frame --last-frame --ref-image \
+        --text-file --ssml-file --dialogue-file --voice --language --style \
+        --speed --pitch --mode --voice-reference --reference-text --sample-rate --stream \
         -c --config --json --dry-run --authorize-spend -q]
 imagine batch <manifest.json> [-c --poll-interval --timeout --json --authorize-spend]
+imagine voices -m <audio-model> [--json --authorize-spend]
 imagine models [--json]
 imagine config path | init [--force] | convert | show
 imagine version | help
@@ -185,8 +189,10 @@ imagine version | help
 
 - 退出码：`0` 成功；`1` 运行失败（含部分失败）；`2` 用法错误。
 - `--json` 结果对象：
-  `{ ok, media, model, backend, requested, succeeded, failed, images:[{path,bytes}], videos:[{path,bytes}], errors:[] }`。
-  `media` = `image` | `video`，产物落在对应数组，另一个恒为空数组（形状稳定，便于 agent 解析）。
+  `{ ok, media, model, backend, requested, succeeded, failed, images:[{path,bytes}], videos:[{path,bytes}], audios:[...], errors:[] }`。
+  `media` = `image` | `video` | `audio`。产物落在对应数组，另外两个恒为空数组。
+  `audios[]` 带 `mime`、`container`、`codec`、`sample_rate_hz`、`channels`、`duration_ms`、
+  `voice`、`alignment_path`、`alignment`、`stream_applied`。没有时间戳时 `alignment` 为 `unsupported`，不编造。
 - batch manifest 每个 job 额外支持 `duration`、`resolution`、`ratio`、`image`（单张）/`images`（Qwen 多参考图）、`watermark`；
   `--json` 的 `tasks[]` 每项带 `media`。
 - 多张图/多条视频 → 文件名自动加 `-1 -2 …` 数字后缀；`-n` 对视频是"发起 n 个 provider 任务"。
@@ -198,7 +204,7 @@ imagine version | help
   没有 `--authorize-spend` 或 `IMAGINE_AUTHORIZE_SPEND=1` 就以退出码 `2` 拒绝。
   本地无鉴权端点、以及缺凭证（本来就会失败）的任务不计入、也不被拦。
 - `imagine models --json` 每项为
-  `{name, backend, media, api_model, endpoints, credential_status, availability, source}`：
+  `{name, backend, media, api_model, endpoints, credential_status, availability, source, capabilities}`：
   `credential_status` = `missing` | `partial` | `configured` | `not_required`（只说明凭证是否就位），
   `availability` 恒为 `unknown` —— 不发起付费调用就无法确认账号是否开通该模型，
   所以不再用 `ready` 暗示"可用"。
@@ -238,6 +244,18 @@ imagine version | help
   data URL 发送）、`auth = "none"` 无鉴权端点、`--steps` 与 `IMAGINE_STEPS`，以及
   `integrations/qwen-image/`（diffusers server + 安装脚本 + 文档）；同一生成契约也兼容
   vLLM-Omni 的 `/v1/images/generations`。
+- **国内图像/视频 API（配置接入，无内置 preset）**：`dashscope_image` / `dashscope_video`（万相；
+  同步多模态生图不送 `X-DashScope-Async`，视频与 image-generation 才送）、`vidu_video`
+  （`Authorization: Token`；参考图与首尾帧是不同接口）、`kling_video`（v1，`duration` 为字符串，
+  `jwt_hs256` 用 access key + secret；不签 Google 服务账号 RS256）、`minimax_video`
+  （成功后 `files/retrieve`，CDN 不带 API 凭证）、`siliconflow_image`。Workspace / 区域 URL
+  由配置给出，不写死 preset。
+- **语音**：`media=audio`。`tts_http` 是 imagine 自己的协议（`integrations/qwen3-tts`，
+  官方 Qwen `non_streaming_mode=false` 不是真流式，服务端须报 `streaming: false` 除非它真的先吐出音频块）。
+  `google_cloud_tts` 是 REST `text:synthesize`（bearer 或 `google_metadata`，不是 Gemini API key；
+  SSML mark 走 v1beta1）。`gemini_tts` 是 Interactions `speech_config`，不是 `gemini_video`。
+  长文本按能力上限拆成多个文件加 `*.segments.json`，不拼接音频。`--stream` 在服务端声明不支持时，
+  生成 POST 之前以退出码 2 拒绝。
 
 **近期**
 - HTTP 超时与有界重试（指数退避，仅幂等失败）；异步任务当前"失败即上报、不重试"。
